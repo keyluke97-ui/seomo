@@ -199,15 +199,18 @@ class JobScraper:
             
             try:
                 res = requests.get(url, params=params, headers=self.headers, timeout=10)
-                # 인코딩 보정
-                res.encoding = res.apparent_encoding if res.apparent_encoding else 'utf-8'
+                # 인코딩 강제 UTF-8 (인크루트 메타태그와 실제 전송 인코딩 불일치 이슈 해결)
+                res.encoding = 'utf-8'
                 
                 if res.status_code != 200:
                     continue
                 
                 soup = BeautifulSoup(res.text, 'html.parser')
-                # 리스트 아이템 선택자 (.clist_vv 또는 .c_row)
-                items = soup.select('.c_row, .clist_vv li')
+                # 리스트 아이템 선택자 (.c_col로 변경 시도)
+                items = soup.select('.c_row')
+                if not items:
+                    items = soup.select('.clist_vv li')
+                
                 if not items:
                     break
                 
@@ -224,15 +227,28 @@ class JobScraper:
         job_info = self._get_base_job_info()
         try:
             # 제목/링크
-            # .cl_top a 또는 .cell_mid .cl_top a, .custom a (구버전)
-            link = item.select_one('.cell_mid .cl_top a, span.custom a, .cl_top a')
+            # 여러 a 태그 중 'jobpost.asp'가 포함된 링크만 찾기 (가장 정확)
+            links = item.select('a')
+            target_link = None
             
-            if link:
-                job_info["title"] = link.text.strip()
-                href = link.get('href')
+            for link in links:
+                href = link.get('href', '')
+                if 'jobpost.asp' in href:
+                    target_link = link
+                    break
+            
+            # 못 찾았다면 기존 셀렉터 시도 (fallback)
+            if not target_link:
+                target_link = item.select_one('.cell_mid .cl_top a, span.custom a, .cl_top a')
+
+            if target_link:
+                job_info["title"] = target_link.text.strip()
+                href = target_link.get('href')
                 if href:
                     job_info["url"] = href
-            
+            else:
+                return None # 링크 없으면 스킵
+
             # 회사 (cpname)
             corp = item.select_one('.cpname')
             if corp:
@@ -395,32 +411,22 @@ def scrape_jobs(
     keywords: List[str],
     deadline_start: datetime,
     deadline_end: datetime,
+    category: str = "", # 직군 정보 추가
     progress_callback=None
 ) -> List[Dict[str, Any]]:
     """통합 스크래핑 함수"""
     scraper = JobScraper()
     results = []
     
-    # 0~100 사이 값
-    # 소스별로 n분의 1
-    
     total_sources = len(sources)
     
     for i, source in enumerate(sources):
-        base_progress = i / total_sources
+        # ... (이전 코드 동일)
+        # 소스별로 n분의 1 진행률 계산
+        pass 
         
         if source == "사람인":
             jobs = scraper.search_saramin(keywords, deadline_start, deadline_end)
-            # 상세 정보 (옵션)
-            for j, job in enumerate(jobs):
-                if job.get('url'):
-                     det = scraper.parse_saramin_detail(job['url'])
-                     job.update(det)
-                
-                # 상세 진행률 반영
-                # 0.5 (수집) + 0.5 (상세)
-                # 근데 여기서 상세까지 하면 너무 느릴 수 있음.
-                # 일단 진행.
             results.extend(jobs)
             
         elif source == "인크루트":
@@ -432,6 +438,11 @@ def scrape_jobs(
             results.extend(jobs)
         
         if progress_callback:
-            progress_callback((i + 1) / total_sources)
+            progress_callback(f"{source} 검색 완료 ({len(jobs)}건)")
+            
+    # 직군 정보 주입
+    if category:
+        for job in results:
+            job["category"] = category
             
     return results

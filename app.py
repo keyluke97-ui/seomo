@@ -242,7 +242,8 @@ def main():
                 keywords=new_keywords,
                 deadline_start=start_datetime,
                 deadline_end=end_datetime,
-                progress_callback=update_status  # 문자열 콜백으로 변경
+                category=selected_category, # 선택된 직군 전달
+                progress_callback=update_status
             )
             
             st.session_state.scraped_jobs = jobs

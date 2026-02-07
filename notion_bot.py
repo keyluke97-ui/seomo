@@ -159,14 +159,22 @@ class NotionBot:
         if deadline_date:
             properties["지원 마감일"] = {"date": {"start": deadline_date}}
         
-        # 직무
-        job_title = job_data.get("job_title", "")
-        if job_title:
+        # 직군 (기존 스크래퍼에서 가져온 job_title과 사용자가 선택한 category 구분)
+        # 1. 사용자가 선택한 '직군' (Select)
+        category = job_data.get("category", "")
+        if category:
+            properties["직군"] = {"select": {"name": category}}
+            
+        # 2. 공고 내용상의 '모집직무' (Text) -> '직무' 컬럼에 저장
+        job_title_text = job_data.get("job_title", "")
+        if job_title_text:
             properties["직무"] = {
-                "rich_text": [{"text": {"content": job_title[:2000]}}]
+                "rich_text": [{"text": {"content": job_title_text[:2000]}}]
             }
         
-        # 급여
+        # 근무형태 (Select)
+        if job_type:
+            properties["근무형태"] = {"select": {"name": job_type}}
         salary = job_data.get("salary", "")
         if salary:
             properties["급여"] = {
