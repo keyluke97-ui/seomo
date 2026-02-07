@@ -132,46 +132,54 @@ def main():
             st.info("대학교 사이트는 추후 지원 예정입니다.")
     
     with col2:
-        st.markdown("### 💼 Step 3: 직군 및 키워드 설정")
-        
+        st.header("Step 3: 직군 및 키워드 설정")
+    
+        # 직군 선택
         categories = get_all_categories(st.session_state.config)
         
-        # 직군 추가 버튼
-        col_cat, col_add = st.columns([4, 1])
-        with col_cat:
-            selected_category = st.radio(
-                "직군 선택",
-                options=categories,
-                horizontal=True,
-                key="category"
-            )
-        with col_add:
-            if st.button("➕", key="add_cat_btn", help="새 직군 추가"):
-                st.session_state.show_add_category = not st.session_state.show_add_category
+        # 세션 상태 초기화 (처음 한 번만)
+        if "selected_category" not in st.session_state:
+            st.session_state.selected_category = categories[0] if categories else "기본"
         
-        # 새 직군 추가 폼
-        if st.session_state.show_add_category:
-            with st.expander("새 직군 추가", expanded=True):
-                new_cat_name = st.text_input("직군 이름", key="new_cat_name")
-                new_cat_keywords = st.text_input(
-                    "키워드 (쉼표로 구분)",
-                    placeholder="예: 마케팅, 광고, 브랜드",
-                    key="new_cat_keywords"
-                )
-                if st.button("추가", key="save_new_cat"):
+        # 탭 대신 라디오 버튼이나 버튼 그룹으로 직관적으로 변경
+        st.write("직군 선택")
+        
+        # 직군 버튼 생성
+        # +1 for the "add new category" popover
+        cols = st.columns(len(categories) + 1 if categories else 1)
+        
+        # 선택된 카테고리를 저장할 변수 (버튼 클릭 시 업데이트)
+        def set_category(cat):
+            st.session_state.selected_category = cat
+            st.rerun() # 화면 갱신
+            
+        for i, cat in enumerate(categories):
+            with cols[i]:
+                # 선택된 버튼 강조 (primary vs secondary)
+                btn_type = "primary" if st.session_state.selected_category == cat else "secondary"
+                if st.button(cat, key=f"cat_{i}", type=btn_type, use_container_width=True):
+                    set_category(cat)
+                    
+        # 새 직군 추가 버튼 (마지막 컬럼)
+        with cols[len(categories) if categories else 0]:
+            with st.popover("➕", use_container_width=True):
+                new_cat_name = st.text_input("새 직군 이름")
+                new_cat_keywords = st.text_input("키워드 (쉼표 구분)")
+                if st.button("추가"):
                     if new_cat_name and new_cat_keywords:
-                        keywords_list = [k.strip() for k in new_cat_keywords.split(",") if k.strip()]
-                        st.session_state.config = add_category(new_cat_name, keywords_list, st.session_state.config)
-                        st.session_state.show_add_category = False
+                        k_list = [k.strip() for k in new_cat_keywords.split(",") if k.strip()]
+                        st.session_state.config = add_category(new_cat_name, k_list, st.session_state.config)
+                        st.success(f"'{new_cat_name}' 추가됨!")
                         st.rerun()
-        
-        # 현재 직군의 키워드 표시 및 편집
+
+        # 현재 선택된 직군 가져오기
+        selected_category = st.session_state.selected_category
         current_keywords = get_keywords(selected_category, st.session_state.config)
         
-        st.markdown("**🏷️ 검색 키워드**")
+        # 키워드 수정 UI
+        st.subheader(f"🏷️ '{selected_category}' 검색 키워드")
         st.caption("키워드를 수정하면 자동 저장됩니다")
         
-        # 키워드 태그 표시
         keyword_tags = st.text_input(
             "키워드 편집",
             value=", ".join(current_keywords),

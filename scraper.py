@@ -315,31 +315,40 @@ class JobScraper:
                     seen_urls.add(base_url)
                     
                     # 링크의 부모/조상에서 정보 추출
-                    # 보통 div.post-list-info 또는 유사
-                    parent = link.find_parent('div', class_=lambda x: x and ('post' in x or 'list' in x))
-                    
-                    if parent:
-                        job_info = self._get_base_job_info()
-                        job_info["title"] = link.text.strip() or "제목 없음"
-                        job_info["url"] = full_url
-                        
-                        # 회사명
-                        corp = parent.select_one('.name, .corp-name')
-                        if corp:
-                            job_info["company"] = corp.text.strip()
-                        
-                        # 마감일 (보통 .date)
-                        date_item = parent.select_one('.date, .deadline')
-                        if date_item:
-                            d_text = date_item.text.strip()
-                            # D-N 제거
-                            d_text = re.sub(r'D-\d+', '', d_text).strip()
-                            job_info["deadline"] = d_text
-                            job_info["deadline_date"] = self._parse_deadline_to_datetime(d_text)
-                        
-                        # 데드라인 체크
-                        if self._is_within_deadline(job_info, start, end):
-                            jobs.append(job_info)
+            # 보통 .list-post를 찾거나, li 태그를 찾아야 함
+            # 잡코리아 구조: <li class="list-post"> ... <div class="post-list-info"> ... </div> </li>
+            parent = link.find_parent('li')
+            
+            if parent:
+                job_info = self._get_base_job_info()
+                job_info["title"] = link.text.strip() or "제목 없음"
+                job_info["url"] = full_url
+                
+                # 회사명
+                corp = parent.select_one('.name, .corp-name, .post-list-corp a')
+                if corp:
+                    job_info["company"] = corp.text.strip()
+                
+                # 마감일 (보통 .date)
+                # 잡코리아: <span class="date">~03/14(금)</span> 또는 <span class="date">상시채용</span>
+                date_item = parent.select_one('.date, .deadline, .option .date')
+                if date_item:
+                    d_text = date_item.text.strip()
+                    # D-N 제거
+                    d_text = re.sub(r'D-\d+', '', d_text).strip()
+                    job_info["deadline"] = d_text
+                    job_info["deadline_date"] = self._parse_deadline_to_datetime(d_text)
+                else:
+                    # 날짜 정보 없으면 상시로 간주하거나 공란
+                    job_info["deadline"] = ""
+                    job_info["deadline_date"] = None # 날짜 없으면 필터링 통과 (아래 로직 참고)
+                
+                # 데드라인 체크 (날짜가 없으면 통과시키는 _is_within_deadline 로직 활용)
+                if self._is_within_deadline(job_info, start, end):
+                    jobs.append(job_info)
+            else:
+                 # 부모를 못 찾은 경우 (구조가 다를 때)
+                 pass
             except Exception:
                 continue
         return jobs
