@@ -195,21 +195,19 @@ def main():
     # Step 4: 실행 버튼
     st.markdown("### 🚀 Step 4: 실행")
     
-    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
+    col_btn1, col_btn2 = st.columns([1, 1])
+    
+    # 세션 상태 초기화 (검색 결과가 없으면)
+    if "scraped_jobs" not in st.session_state:
+        st.session_state.scraped_jobs = []
     
     with col_btn1:
-        scrape_only_button = st.button(
-            "🔍 공고 수집만",
-            key="scrape_only_btn",
-            use_container_width=True,
-            help="Notion 저장 없이 스크래핑만 실행"
-        )
-    
-    with col_btn2:
+        # 기존: 공고 수집만 -> 변경: 공고 검색하기 (Flow 1단계)
         search_button = st.button(
-            "🔍 공고 찾기 & Notion 저장",
+            "🔍 공고 검색하기",
             key="search_btn",
-            use_container_width=True
+            use_container_width=True,
+            help="Notion에 저장하기 전에 먼저 검색 결과를 확인합니다."
         )
     
     # 공통 검증
@@ -222,157 +220,156 @@ def main():
             return False
         return True
     
-    # 스크래핑만 실행
-    if scrape_only_button:
-        if not validate_inputs():
-            st.stop()
-        
-        progress_container = st.container()
-        
-        with progress_container:
-            st.markdown("#### 🔄 검색 중...")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            status_text.text("채용 공고 수집 중...")
-            
-            try:
-                start_datetime = datetime.combine(start_date, datetime.min.time())
-                end_datetime = datetime.combine(end_date, datetime.max.time())
-                
-                jobs = scrape_jobs(
-                    sources=selected_sources,
-                    keywords=new_keywords,
-                    deadline_start=start_datetime,
-                    deadline_end=end_datetime,
-                    progress_callback=lambda p: progress_bar.progress(int(p * 100))
-                )
-                
-                progress_bar.progress(100)
-                status_text.empty()
-                
-                if not jobs:
-                    st.warning("검색 조건에 맞는 공고가 없습니다.")
-                else:
-                    st.success(f"✅ **{len(jobs)}개**의 공고를 찾았습니다!")
-                    st.session_state.search_results = jobs
-                    
-            except Exception as e:
-                st.error(f"오류 발생: {e}")
-    
-    # 검색 + Notion 저장 실행
+    # 1단계: 검색 실행
     if search_button:
         if not validate_inputs():
             st.stop()
         
-        # Notion 연결 확인
+        # 상태 메시지 컨테이너
+        status_container = st.status("채용 공고를 검색하고 있습니다...", expanded=True)
+        
         try:
-            notion_token = st.secrets.get("NOTION_TOKEN", "")
-            notion_db_id = st.secrets.get("NOTION_DATABASE_ID", "")
+            start_datetime = datetime.combine(start_date, datetime.min.time())
+            end_datetime = datetime.combine(end_date, datetime.max.time())
             
-            if not notion_token or not notion_db_id or "your-" in notion_token:
-                st.error("⚠️ Notion API 설정이 필요합니다. `.streamlit/secrets.toml` 파일을 확인해주세요.")
-                st.info("""
-                **설정 방법:**
-                1. [Notion Integrations](https://www.notion.so/my-integrations)에서 새 통합 생성
-                2. 토큰 복사 후 `secrets.toml`에 입력
-                3. Notion 데이터베이스에서 통합 연결
-                
-                **💡 Notion 없이 테스트하려면** 왼쪽의 "🔍 공고 수집만" 버튼을 사용하세요.
-                """)
-                st.stop()
+            # 진행 상황 콜백
+            def update_status(msg):
+                status_container.write(f"👉 {msg}")
             
-            notion_bot = NotionBot(notion_token, notion_db_id)
+            # 스크래핑 실행
+            jobs = scrape_jobs(
+                sources=selected_sources,
+                keywords=new_keywords,
+                deadline_start=start_datetime,
+                deadline_end=end_datetime,
+                progress_callback=update_status  # 문자열 콜백으로 변경
+            )
+            
+            st.session_state.scraped_jobs = jobs
+            status_container.update(label="검색 완료!", state="complete", expanded=False)
+            
         except Exception as e:
-            st.error(f"Notion 연결 실패: {e}")
-            st.stop()
+            status_container.update(label="오류 발생", state="error")
+            st.error(f"검색 중 오류가 발생했습니다: {e}")
+            import traceback
+            st.code(traceback.format_exc())
+
+    # 2단계: 결과 미리보기 및 저장 (검색 결과가 있을 때 표시)
+    if st.session_state.scraped_jobs:
+        st.markdown("---")
+        st.markdown(f"### 📋 검색 결과 확인 ({len(st.session_state.scraped_jobs)}건)")
         
-        # 진행 상태 표시
-        progress_container = st.container()
+        # DataFrame 생성을 위한 데이터 가공
+        import pandas as pd
         
-        with progress_container:
-            st.markdown("#### 🔄 검색 중...")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+        # 표시할 데이터만 추출
+        display_data = []
+        for job in st.session_state.scraped_jobs:
+            display_data.append({
+                "선택": True,  # 기본값 체크
+                "공고명": job.get("title"),
+                "회사명": job.get("company"),
+                "마감일": job.get("deadline"),
+                "링크": job.get("url")
+            })
             
-            # 1단계: 크롤링
-            status_text.text("채용 공고 수집 중...")
+        df = pd.DataFrame(display_data)
+        
+        # 데이터 에디터 (체크박스 기능)
+        edited_df = st.data_editor(
+            df,
+            column_config={
+                "선택": st.column_config.CheckboxColumn(
+                    "저장",
+                    help="Notion에 저장할 공고를 선택하세요",
+                    default=True,
+                ),
+                "링크": st.column_config.LinkColumn("공고 링크"),
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        # 선택된 공고만 필터링
+        selected_indices = [
+            i for i, row in edited_df.iterrows() if row["선택"]
+        ]
+        
+        col_save, col_info = st.columns([1, 2])
+        
+        with col_save:
+            save_button = st.button(
+                f"💾 선택한 {len(selected_indices)}개 공고 Notion 저장",
+                type="primary",
+                use_container_width=True,
+                disabled=len(selected_indices) == 0
+            )
+
+        # 3단계: 저장 실행
+        if save_button:
+            # 선택된 원본 데이터 가져오기
+            jobs_to_save = [st.session_state.scraped_jobs[i] for i in selected_indices]
             
+            # Notion 연결 확인
             try:
-                start_datetime = datetime.combine(start_date, datetime.min.time())
-                end_datetime = datetime.combine(end_date, datetime.max.time())
+                notion_token = st.secrets.get("NOTION_TOKEN", "") or st.secrets.get("notion", {}).get("token", "")
+                notion_db_id = st.secrets.get("NOTION_DATABASE_ID", "") or st.secrets.get("notion", {}).get("database_id", "")
                 
-                jobs = scrape_jobs(
-                    sources=selected_sources,
-                    keywords=new_keywords,
-                    deadline_start=start_datetime,
-                    deadline_end=end_datetime,
-                    progress_callback=lambda p: progress_bar.progress(int(p * 50))
-                )
-                
-                if not jobs:
-                    st.warning("검색 조건에 맞는 공고가 없습니다.")
+                if not notion_token or not notion_db_id or "your-" in notion_token:
+                    st.error("⚠️ Notion API 설정이 필요합니다. `.streamlit/secrets.toml` 파일을 확인해주세요.")
                     st.stop()
                 
-                status_text.text(f"{len(jobs)}개의 공고를 찾았습니다. Notion에 저장 중...")
+                notion_bot = NotionBot(notion_token, notion_db_id)
                 
-                # 2단계: Notion 저장
+                # 저장 진행
+                save_status = st.status("Notion에 저장 중입니다...", expanded=True)
+                progress_bar = save_status.progress(0)
+                
                 def notion_progress(p):
-                    progress_bar.progress(50 + int(p * 50))
+                    progress_bar.progress(int(p * 100))
                 
-                result = notion_bot.batch_create_jobs(jobs, progress_callback=notion_progress)
+                result = notion_bot.batch_create_jobs(jobs_to_save, progress_callback=notion_progress)
                 
-                progress_bar.progress(100)
-                status_text.empty()
+                save_status.update(label="저장 완료!", state="complete", expanded=False)
                 
-                # 결과 표시
-                st.success(f"""
-                ✅ **완료!**
-                - 저장됨: **{result['saved']}개**
-                - 중복 제외: {result['skipped']}개
-                - 실패: {result['failed']}개
-                """)
+                # 결과 리포트
+                if result['failed'] == 0:
+                    st.success(f"✅ **{result['saved']}개** 저장 성공! (중복 제외: {result['skipped']}개)")
+                    st.balloons()
+                else:
+                    st.warning(f"⚠️ {result['saved']}개 성공, {result['failed']}개 실패")
+                    with st.expander("실패 상세 내용 보기"):
+                        for err in result.get('errors', []):
+                            st.text(err)
                 
-                st.session_state.search_results = jobs
+                # 바로가기 링크 버튼
+                db_url = f"https://www.notion.so/{notion_db_id.replace('-', '')}"
+                st.markdown(f"""
+                    <a href="{db_url}" target="_blank" style="text-decoration: none;">
+                        <button style="
+                            background-color: #4CAF50;
+                            border: none;
+                            color: white;
+                            padding: 10px 24px;
+                            text-align: center;
+                            text-decoration: none;
+                            display: inline-block;
+                            font-size: 16px;
+                            margin: 4px 2px;
+                            cursor: pointer;
+                            border-radius: 4px;
+                            width: 100%;">
+                            👉 내 Notion 페이지 바로가기
+                        </button>
+                    </a>
+                    """, unsafe_allow_html=True)
                 
             except Exception as e:
-                import traceback
-                error_msg = traceback.format_exc()
-                st.error(f"오류 발생: {e}")
-                with st.expander("에러 상세 정보"):
-                    st.code(error_msg, language="python")
-
-    # 검색 결과 표시
-    if st.session_state.search_results:
-        st.markdown("---")
-        st.markdown("### 📋 검색 결과")
-        
-        # 저장 결과가 있을 경우 (Notion 저장 시도 후)
-        # result 변수가 로컬 범위에 존재하는지 확인 (검색 버튼을 눌렀을 때만 존재)
-        if 'result' in locals() and result and result.get('failed', 0) > 0:
-            st.error(f"⚠️ {result['failed']}개의 공고 저장에 실패했습니다.")
-            with st.expander("실패 상세 내용 보기"):
-                for err in result.get('errors', []):
-                    st.text(err)
+                st.error(f"Notion 저장 중 오류 발생: {e}")
                 
-                st.info("""
-                **Notion 저장 실패 시 확인사항:**
-                1. `.streamlit/secrets.toml`에 `NOTION_TOKEN`과 `NOTION_DATABASE_ID`가 올바른지 확인하세요.
-                2. Notion 데이터베이스에 통합(Integration)이 연결되어 있는지 확인하세요. (데이터베이스 우측 상단 ... > 'Add connections')
-                3. 데이터베이스 속성(컬럼) 이름이 코드와 일치하는지 확인하세요. (공고명, 링크, 지원기업, 직무, 급여, 담당업무, 근무형태, 근무시간, 근무예정일, 근무기간, 지원상태, 지원 마감일)
-                """)
-        
-        for job in st.session_state.search_results[:10]:
-            with st.container():
-                st.markdown(f"""
-                <div class="result-card">
-                    <strong>{job.get('title', '제목 없음')}</strong><br>
-                    <span style="color: #6b7280;">🏢 {job.get('company', '-')} | ⏰ {job.get('deadline', '-')}</span>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        if len(st.session_state.search_results) > 10:
-            st.info(f"... 외 {len(st.session_state.search_results) - 10}개의 공고가 더 있습니다.")
+    elif search_button: # 검색 버튼 눌렀는데 결과가 없는 경우
+         st.markdown("---")
+         st.info("오늘은 조건에 맞는 새로운 공고가 없네요! ☕\n\n잠시 쉬어가라는 뜻인가 봐요. 내일 다시 확인해보세요!")
 
 
 if __name__ == "__main__":

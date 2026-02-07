@@ -123,9 +123,11 @@ class NotionBot:
             subtitle_parts.append(f"📋 {job_type}")
         
         if subtitle_parts:
-            full_title = f"{title} | {' | '.join(subtitle_parts)}"
-        else:
-            full_title = title
+            # 사용자의 요청으로 제목만 깔끔하게 표시
+            # full_title = f"{title} | {' | '.join(subtitle_parts)}"
+            pass
+
+        full_title = title  # 제목만 사용
             
         properties["공고명"] = {
             "title": [{"text": {"content": full_title[:2000]}}]
@@ -143,7 +145,17 @@ class NotionBot:
             }
         
         # 지원 마감일 (날짜 형식)
-        deadline_date = self._parse_deadline(deadline)
+        # 1. 이미 파싱된 날짜가 있으면 우선 사용
+        deadline_date = None
+        if job_data.get("deadline_date"):
+            d_date = job_data["deadline_date"]
+            if isinstance(d_date, datetime):
+                deadline_date = d_date.strftime("%Y-%m-%d")
+        
+        # 2. 없으면 문자열 파싱 시도
+        if not deadline_date:
+            deadline_date = self._parse_deadline(deadline)
+            
         if deadline_date:
             properties["지원 마감일"] = {"date": {"start": deadline_date}}
         
@@ -201,19 +213,18 @@ class NotionBot:
     def _parse_deadline(self, deadline_str: str) -> Optional[str]:
         """
         다양한 날짜 형식을 ISO 8601로 변환
-        
-        지원 형식:
-        - "D-5", "D-10" 등
-        - "2024.03.01", "2024-03-01", "2024/03/01"
-        - "03.01(금)", "3/1"
-        - "~02/28", "~ 3.15"
-        - "채용시까지", "상시채용" → None 반환
         """
         if not deadline_str:
             return None
         
         deadline_str = deadline_str.strip()
         today = datetime.now()
+        
+        # "오늘마감", "내일마감" 처리
+        if "오늘" in deadline_str:
+            return today.strftime("%Y-%m-%d")
+        if "내일" in deadline_str:
+            return (today + timedelta(days=1)).strftime("%Y-%m-%d")
         
         # D-N 형식
         d_match = re.match(r'D-(\d+)', deadline_str, re.IGNORECASE)
@@ -226,32 +237,31 @@ class NotionBot:
         if any(keyword in deadline_str for keyword in ["채용시", "상시", "수시", "마감시"]):
             return None
         
-        # ~MM/DD 또는 ~MM.DD 형식
-        tilde_match = re.search(r'~?\s*(\d{1,2})[./](\d{1,2})', deadline_str)
-        if tilde_match:
-            month = int(tilde_match.group(1))
-            day = int(tilde_match.group(2))
-            year = today.year
-            # 현재 월보다 작으면 내년으로 추정
-            if month < today.month or (month == today.month and day < today.day):
-                year += 1
-            try:
-                result_date = datetime(year, month, day)
-                return result_date.strftime("%Y-%m-%d")
-            except ValueError:
-                pass
-        
-        # YYYY.MM.DD 또는 YYYY-MM-DD 형식
-        full_date_match = re.search(r'(\d{4})[./-](\d{1,2})[./-](\d{1,2})', deadline_str)
-        if full_date_match:
-            try:
+        try:
+            # ~MM/DD 또는 ~MM.DD 형식 (날짜만 있는 경우)
+            # 날짜 패턴 추출 (숫자.숫자 또는 숫자/숫자)
+            date_pattern = re.search(r'(\d{1,2})[./-](\d{1,2})', deadline_str)
+            if date_pattern:
+                month = int(date_pattern.group(1))
+                day = int(date_pattern.group(2))
+                year = today.year
+                
+                # 현재 월보다 작으면 내년으로 추정 (단, 차이가 많이 날 때만)
+                if month < today.month - 2: 
+                    year += 1
+                
+                return datetime(year, month, day).strftime("%Y-%m-%d")
+                
+            # YYYY.MM.DD 또는 YYYY-MM-DD 형식
+            full_date_match = re.search(r'(\d{4})[./-](\d{1,2})[./-](\d{1,2})', deadline_str)
+            if full_date_match:
                 year = int(full_date_match.group(1))
                 month = int(full_date_match.group(2))
                 day = int(full_date_match.group(3))
-                result_date = datetime(year, month, day)
-                return result_date.strftime("%Y-%m-%d")
-            except ValueError:
-                pass
+                return datetime(year, month, day).strftime("%Y-%m-%d")
+
+        except Exception:
+            pass
         
         # dateutil 파서로 시도
         try:
