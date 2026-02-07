@@ -1,0 +1,107 @@
+"""
+config.py - 직군 및 키워드 설정 관리 모듈
+"""
+import json
+import os
+from pathlib import Path
+
+# 설정 파일 경로
+CONFIG_FILE = Path(__file__).parent / "user_config.json"
+
+# 기본 직군별 키워드 설정
+DEFAULT_JOB_CATEGORIES = {
+    "대학교 행정직": ["대학교", "행정", "행정직", "조교", "직원"],
+    "교직원": ["교직원", "학교", "교무", "행정실"],
+    "은행": ["은행", "금융", "은행원", "텔러", "창구"],
+    "유학": ["유학", "해외", "어학연수", "유학원"],
+}
+
+# 검색 소스 목록
+JOB_SOURCES = {
+    "사람인": {
+        "enabled": True,
+        "base_url": "https://www.saramin.co.kr",
+        "search_url": "https://www.saramin.co.kr/zf_user/search/recruit"
+    },
+    "인크루트": {
+        "enabled": True,
+        "base_url": "https://www.incruit.com",
+        "search_url": "https://search.incruit.com/list/search.asp"
+    },
+    "잡코리아": {
+        "enabled": True,
+        "base_url": "https://www.jobkorea.co.kr",
+        "search_url": "https://www.jobkorea.co.kr/Search"
+    },
+    "대학교 사이트": {
+        "enabled": False,
+        "base_url": "",
+        "search_url": ""
+    }
+}
+
+
+def load_config() -> dict:
+    """JSON 파일에서 사용자 설정 로드"""
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    
+    # 기본 설정 반환
+    return {
+        "job_categories": DEFAULT_JOB_CATEGORIES.copy(),
+        "custom_categories": []
+    }
+
+
+def save_config(config: dict) -> bool:
+    """변경된 설정을 JSON 파일에 저장"""
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        return True
+    except IOError:
+        return False
+
+
+def get_keywords(category: str, config: dict = None) -> list:
+    """선택된 직군의 키워드 반환"""
+    if config is None:
+        config = load_config()
+    
+    categories = config.get("job_categories", DEFAULT_JOB_CATEGORIES)
+    return categories.get(category, [])
+
+
+def add_category(category_name: str, keywords: list, config: dict = None) -> dict:
+    """새 직군 추가"""
+    if config is None:
+        config = load_config()
+    
+    config["job_categories"][category_name] = keywords
+    if category_name not in config.get("custom_categories", []):
+        config.setdefault("custom_categories", []).append(category_name)
+    
+    save_config(config)
+    return config
+
+
+def update_keywords(category: str, keywords: list, config: dict = None) -> dict:
+    """직군의 키워드 업데이트"""
+    if config is None:
+        config = load_config()
+    
+    config["job_categories"][category] = keywords
+    save_config(config)
+    return config
+
+
+def get_all_categories(config: dict = None) -> list:
+    """모든 직군 목록 반환"""
+    if config is None:
+        config = load_config()
+    
+    return list(config.get("job_categories", DEFAULT_JOB_CATEGORIES).keys())

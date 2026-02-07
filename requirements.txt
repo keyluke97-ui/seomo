@@ -1,0 +1,7 @@
+streamlit>=1.30.0
+# selenium>=4.15.0  <-- Removed for memory optimization
+# webdriver-manager>=4.0.1 <-- Removed for memory optimization
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+notion-client>=2.2.0
+python-dateutil>=2.8.2
