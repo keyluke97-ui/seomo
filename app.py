@@ -304,6 +304,10 @@ def main():
         if summary_parts:
             st.caption(f"📊 소스별: {' / '.join(summary_parts)}")
 
+        # [FIX-JK] 잡코리아가 선택됐는데 결과 0건이면 경고
+        if "잡코리아" in selected_sources and source_counts.get("잡코리아", 0) == 0:
+            st.warning("⚠️ 잡코리아에서 결과를 가져오지 못했습니다. 잡코리아 서버가 접속을 차단했을 수 있습니다. 잠시 후 다시 시도해주세요.")
+
         display_data = []
         for job in st.session_state.scraped_jobs:
             display_data.append({

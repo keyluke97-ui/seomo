@@ -2,7 +2,7 @@
 scraper.py - 웹 크롤러 모듈 (Requests + BeautifulSoup)
 경량화 버전 (메모리 최적화)
 
-리팩토링 v3:
+리팩토링 v4:
 - [A] 인크루트 인코딩 cp949 강제 (apparent_encoding 오탐 수정)
 - [C] 잡코리아 셀렉터 다중화 + 헤더 강화 + early exit
 - [D] 네거티브 키워드 필터
@@ -12,6 +12,7 @@ scraper.py - 웹 크롤러 모듈 (Requests + BeautifulSoup)
 - [FIX] source 필드 추가 (출처 추적)
 - [FIX] D-N only 텍스트 날짜 파싱 개선
 - [FIX] category 없어도 기본 네거티브 필터 적용
+- [FIX-JK] 잡코리아 cloudscraper + Session 쿠키 + Circuit Breaker
 """
 import requests
 import time
@@ -21,12 +22,23 @@ from typing import List, Dict, Any, Optional
 import re
 import urllib3
 
+# cloudscraper: TLS 핑거프린트 위장 (잡코리아 WAF 우회)
+try:
+    import cloudscraper
+    HAS_CLOUDSCRAPER = True
+except ImportError:
+    HAS_CLOUDSCRAPER = False
+    print("[WARN] cloudscraper 미설치 — pip install cloudscraper")
+
 # SSL 경고 숨김
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 기본 설정
 DEFAULT_TIMEOUT = 15
+JK_CONNECT_TIMEOUT = 8   # 잡코리아 connect timeout (빠른 실패)
+JK_READ_TIMEOUT = 15     # 잡코리아 read timeout
 MAX_BODY_LENGTH = 2000
+JK_MAX_CONSECUTIVE_FAILS = 3  # Circuit Breaker 임계값
 
 # ──────────────────────────────────────
 # [D] 네거티브 키워드 필터 (제외 목록)
@@ -93,9 +105,67 @@ class JobScraper:
             "Cache-Control": "max-age=0",
         }
 
+        # [Phase2] 잡코리아 전용 Session (cloudscraper or requests.Session)
+        self._jk_session = None
+        self._jk_session_ready = False
+
+        # [Phase3] Circuit Breaker 상태
+        self._jk_consecutive_fails = 0
+        self._jk_circuit_open = False
+
     def close(self):
-        """리소스 정리 (Requests는 필요 없지만 호환성 유지)"""
-        pass
+        """리소스 정리"""
+        if self._jk_session and hasattr(self._jk_session, 'close'):
+            self._jk_session.close()
+
+    def _get_jk_session(self):
+        """[Phase1+2] 잡코리아 전용 세션 생성 + 홈페이지 warm-up"""
+        if self._jk_session is not None:
+            return self._jk_session
+
+        # Phase1: cloudscraper로 TLS 핑거프린트 위장
+        if HAS_CLOUDSCRAPER:
+            try:
+                self._jk_session = cloudscraper.create_scraper(
+                    browser={
+                        'browser': 'chrome',
+                        'platform': 'windows',
+                        'desktop': True,
+                    }
+                )
+                print("[잡코리아] cloudscraper 세션 생성")
+            except Exception as e:
+                print(f"[잡코리아] cloudscraper 생성 실패: {e}, requests.Session fallback")
+                self._jk_session = requests.Session()
+        else:
+            self._jk_session = requests.Session()
+
+        # Phase2: 홈페이지 방문으로 쿠키 확보
+        jk_headers = {
+            **self.headers,
+            "Referer": "https://www.google.com/",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        try:
+            warmup = self._jk_session.get(
+                "https://www.jobkorea.co.kr/",
+                headers=jk_headers,
+                timeout=(JK_CONNECT_TIMEOUT, JK_READ_TIMEOUT),
+                allow_redirects=True,
+            )
+            if warmup.status_code == 200:
+                self._jk_session_ready = True
+                print(f"[잡코리아] 세션 warm-up 성공 (쿠키 {len(self._jk_session.cookies)}개)")
+            else:
+                print(f"[잡코리아] warm-up HTTP {warmup.status_code}")
+        except Exception as e:
+            print(f"[잡코리아] warm-up 실패: {e}")
+
+        return self._jk_session
 
     # ──────────────────────────────────────
     # 공통 헬퍼
@@ -497,13 +567,20 @@ class JobScraper:
         return result[:max_results]
 
     def _search_jobkorea_keyword(self, keyword, start, end, location_filter, max_pages):
-        """[FIX] location_filter 파라미터 추가"""
+        """[FIX-JK] cloudscraper + Session 쿠키 + Circuit Breaker"""
         jobs = []
 
-        # [FIX-C] 잡코리아 전용 헤더 (봇 탐지 우회 강화)
+        # [Phase3] Circuit Breaker — 연속 실패 시 즉시 스킵
+        if self._jk_circuit_open:
+            print(f"[잡코리아] Circuit OPEN — '{keyword}' 스킵")
+            return jobs
+
+        # [Phase1+2] 세션 기반 요청
+        session = self._get_jk_session()
+
         jk_headers = {
             **self.headers,
-            "Referer": "https://www.jobkorea.co.kr/",
+            "Referer": "https://www.jobkorea.co.kr/Search/",
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "same-origin",
@@ -512,9 +589,22 @@ class JobScraper:
         }
 
         for page in range(1, max_pages + 1):
+            # Circuit Breaker 중간 체크
+            if self._jk_circuit_open:
+                break
+
             url = f"https://www.jobkorea.co.kr/Search/?stext={keyword}&Page_No={page}"
             try:
-                res = requests.get(url, headers=jk_headers, timeout=self.timeout)
+                res = session.get(
+                    url,
+                    headers=jk_headers,
+                    timeout=(JK_CONNECT_TIMEOUT, JK_READ_TIMEOUT),
+                    allow_redirects=True,
+                )
+
+                # 성공 → Circuit Breaker 리셋
+                self._jk_consecutive_fails = 0
+
                 if res.status_code != 200:
                     print(f"잡코리아 HTTP {res.status_code} (page {page})")
                     continue
@@ -598,6 +688,21 @@ class JobScraper:
                         if self._is_within_deadline(job_info, start, end):
                             jobs.append(job_info)
 
+                # 페이지 간 딜레이 (봇 탐지 방지)
+                if page < max_pages:
+                    time.sleep(0.8)
+
+            except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as e:
+                # [Phase3] 연결 실패 → Circuit Breaker 카운트
+                self._jk_consecutive_fails += 1
+                print(f"잡코리아 page {page} 연결 실패 ({self._jk_consecutive_fails}/{JK_MAX_CONSECUTIVE_FAILS}): {type(e).__name__}")
+
+                if self._jk_consecutive_fails >= JK_MAX_CONSECUTIVE_FAILS:
+                    self._jk_circuit_open = True
+                    print(f"[잡코리아] ⚠️ Circuit Breaker OPEN — 연속 {JK_MAX_CONSECUTIVE_FAILS}회 실패, 나머지 키워드 스킵")
+                    break
+                continue
+
             except Exception as e:
                 print(f"잡코리아 page {page} 오류: {e}")
                 continue
@@ -636,9 +741,10 @@ class JobScraper:
             return detail_info
 
     def parse_jobkorea_detail(self, url: str) -> Dict[str, Any]:
-        """잡코리아 상세 정보 (급여, 본문)"""
+        """잡코리아 상세 정보 (급여, 본문) — Session 기반"""
         detail_info = {}
         try:
+            session = self._get_jk_session()
             jk_headers = {
                 **self.headers,
                 "Referer": "https://www.jobkorea.co.kr/",
@@ -646,7 +752,7 @@ class JobScraper:
                 "Sec-Fetch-Mode": "navigate",
                 "Sec-Fetch-Site": "same-origin",
             }
-            res = requests.get(url, headers=jk_headers, timeout=self.timeout)
+            res = session.get(url, headers=jk_headers, timeout=(JK_CONNECT_TIMEOUT, JK_READ_TIMEOUT))
             if res.status_code != 200:
                 return detail_info
 
