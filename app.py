@@ -14,7 +14,7 @@ from config import (
     add_category, update_keywords, get_all_categories,
     JOB_SOURCES, LOCATION_OPTIONS
 )
-from scraper import scrape_jobs, get_default_negative
+from scraper import scrape_jobs, get_default_negative, enrich_jobs
 from notion_bot import NotionBot
 
 # 페이지 설정
@@ -311,6 +311,7 @@ def main():
                 "소스": job.get("source", ""),
                 "공고명": job.get("title"),
                 "회사명": job.get("company"),
+                "급여": job.get("salary", ""),
                 "마감일": job.get("deadline"),
                 "링크": job.get("url")
             })
@@ -335,7 +336,17 @@ def main():
             i for i, row in edited_df.iterrows() if row["선택"]
         ]
 
-        col_save, col_info = st.columns([1, 2])
+        col_enrich, col_save, col_info = st.columns([1, 1, 1])
+
+        with col_enrich:
+            # [Phase2] 상세 보강 버튼
+            salary_empty = sum(1 for j in st.session_state.scraped_jobs if not j.get("salary", "").strip())
+            enrich_button = st.button(
+                f"🔍 급여정보 보강 ({salary_empty}건 미확인)",
+                use_container_width=True,
+                disabled=salary_empty == 0,
+                help="급여 정보가 없는 공고의 상세 페이지를 방문하여 급여 정보를 가져옵니다."
+            )
 
         with col_save:
             save_button = st.button(
@@ -344,6 +355,24 @@ def main():
                 use_container_width=True,
                 disabled=len(selected_indices) == 0
             )
+
+        # 2.5단계: 상세 보강 실행
+        if enrich_button:
+            enrich_status = st.status("상세 페이지에서 급여 정보를 가져오고 있습니다...", expanded=True)
+
+            def enrich_progress(msg):
+                enrich_status.write(f"👉 {msg}")
+
+            try:
+                st.session_state.scraped_jobs = enrich_jobs(
+                    st.session_state.scraped_jobs,
+                    progress_callback=enrich_progress
+                )
+                enrich_status.update(label="급여 보강 완료!", state="complete", expanded=False)
+                st.rerun()
+            except Exception as e:
+                enrich_status.update(label="보강 중 오류", state="error")
+                st.error(f"상세 보강 중 오류: {e}")
 
         # 3단계: 저장 실행
         if save_button:

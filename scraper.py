@@ -14,6 +14,7 @@ scraper.py - 웹 크롤러 모듈 (Requests + BeautifulSoup)
 - [FIX] category 없어도 기본 네거티브 필터 적용
 """
 import requests
+import time
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
@@ -308,7 +309,10 @@ class JobScraper:
                 text = cond.text.strip()
                 if any(t in text for t in ["정규직", "계약직", "인턴", "파견직", "아르바이트"]):
                     job_info["type"] = text
-                    break
+                # [Phase1] 급여 추출 (목록 페이지)
+                if any(s in text for s in ["만원", "연봉", "월급", "시급", "회사내규", "면접후", "협의", "급여"]):
+                    if not job_info["salary"]:
+                        job_info["salary"] = text
 
             return job_info
         except Exception:
@@ -453,6 +457,14 @@ class JobScraper:
                 job_info["deadline"] = d_text
                 job_info["deadline_date"] = self._parse_deadline_to_datetime(d_text)
 
+            # [Phase1] 급여 추출 (목록 페이지)
+            salary_candidates = item.select('.cell_mid .cl_btm span, .cl_md span, span')
+            for sc in salary_candidates:
+                sc_text = sc.text.strip()
+                if any(s in sc_text for s in ["만원", "연봉", "월급", "시급", "회사내규", "면접후", "협의", "급여"]):
+                    job_info["salary"] = sc_text
+                    break
+
             return job_info
         except Exception:
             return None
@@ -561,6 +573,15 @@ class JobScraper:
                         if corp:
                             job_info["company"] = corp.text.strip()
 
+                        # [Phase1] 급여 추출 (목록 페이지)
+                        salary_el = parent.select_one(
+                            '[class*="salary"], [class*="pay"], .option span'
+                        )
+                        if salary_el:
+                            s_text = salary_el.text.strip()
+                            if any(s in s_text for s in ["만원", "연봉", "월급", "시급", "회사내규", "면접후", "협의", "급여"]):
+                                job_info["salary"] = s_text
+
                         # 마감일 셀렉터 다중화
                         date_item = parent.select_one(
                             '.date, .deadline, .option .date, '
@@ -581,6 +602,130 @@ class JobScraper:
                 print(f"잡코리아 page {page} 오류: {e}")
                 continue
         return jobs
+
+
+    # ──────────────────────────────────────
+    # [Phase2] 상세 페이지 파서 (급여 보강용)
+    # ──────────────────────────────────────
+    def parse_incruit_detail(self, url: str) -> Dict[str, Any]:
+        """인크루트 상세 정보 (급여, 본문)"""
+        detail_info = {}
+        try:
+            res = requests.get(url, headers=self.headers, timeout=self.timeout)
+            res.encoding = 'cp949'
+            if res.status_code != 200:
+                return detail_info
+
+            soup = BeautifulSoup(res.text, 'html.parser')
+
+            # 급여 — dt/th 라벨 기반 탐색
+            for el in soup.select('dt, th, .tit, .label'):
+                if el and any(k in el.text for k in ["급여", "연봉", "월급", "임금", "급료"]):
+                    sibling = el.find_next_sibling('dd') or el.find_next_sibling('td') or el.find_next()
+                    if sibling:
+                        detail_info["salary"] = sibling.text.strip()[:200]
+                        break
+
+            # 본문
+            content = soup.select_one('.job_detail, .detail_cont, #content, .jobCont')
+            if content:
+                detail_info["body"] = content.get_text('\n', strip=True)[:MAX_BODY_LENGTH]
+
+            return detail_info
+        except Exception:
+            return detail_info
+
+    def parse_jobkorea_detail(self, url: str) -> Dict[str, Any]:
+        """잡코리아 상세 정보 (급여, 본문)"""
+        detail_info = {}
+        try:
+            jk_headers = {
+                **self.headers,
+                "Referer": "https://www.jobkorea.co.kr/",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-origin",
+            }
+            res = requests.get(url, headers=jk_headers, timeout=self.timeout)
+            if res.status_code != 200:
+                return detail_info
+
+            soup = BeautifulSoup(res.text, 'html.parser')
+
+            # 급여 — dt/th 라벨 기반 탐색
+            for el in soup.select('dt, th, .tit'):
+                if el and any(k in el.text for k in ["급여", "연봉", "월급", "임금", "급료"]):
+                    sibling = el.find_next_sibling('dd') or el.find_next_sibling('td') or el.find_next()
+                    if sibling:
+                        detail_info["salary"] = sibling.text.strip()[:200]
+                        break
+
+            # 본문
+            content = soup.select_one('.artReadComp, .viewJobCont, .cont, .tbRow')
+            if content:
+                detail_info["body"] = content.get_text('\n', strip=True)[:MAX_BODY_LENGTH]
+
+            return detail_info
+        except Exception:
+            return detail_info
+
+    def enrich_job_detail(self, job: Dict) -> Dict:
+        """단일 공고 상세 정보 보강 (급여 없을 때만)"""
+        url = job.get("url", "")
+        if not url:
+            return job
+
+        source = job.get("source", "")
+        detail = {}
+
+        if source == "사람인":
+            detail = self.parse_saramin_detail(url)
+        elif source == "인크루트":
+            detail = self.parse_incruit_detail(url)
+        elif source == "잡코리아":
+            detail = self.parse_jobkorea_detail(url)
+
+        # 기존 값이 비어있는 필드만 보강
+        for key, val in detail.items():
+            if val and not job.get(key):
+                job[key] = val
+
+        return job
+
+
+# ──────────────────────────────────────
+# 상세 보강 standalone 함수 (app.py에서 호출)
+# ──────────────────────────────────────
+SALARY_SKIP_KEYWORDS = ["회사내규", "면접후 결정", "면접후결정", "협의", "추후협의", "추후 협의"]
+
+
+def enrich_jobs(
+    jobs: List[Dict],
+    progress_callback=None
+) -> List[Dict]:
+    """[Phase2] 급여 없는/무의미한 공고만 상세 페이지에서 보강"""
+    scraper = JobScraper()
+
+    needs_detail = []
+    for i, job in enumerate(jobs):
+        salary = job.get("salary", "").strip()
+        if not salary or any(skip in salary for skip in SALARY_SKIP_KEYWORDS):
+            needs_detail.append(i)
+
+    enriched_count = 0
+    for idx, i in enumerate(needs_detail):
+        job = jobs[i]
+        jobs[i] = scraper.enrich_job_detail(job)
+        enriched_count += 1
+
+        if progress_callback:
+            progress_callback(f"상세 보강 중... ({idx + 1}/{len(needs_detail)})")
+
+        # 봇 탐지 방지 딜레이
+        time.sleep(0.5)
+
+    print(f"[보강] {len(jobs)}건 중 {len(needs_detail)}건 상세 조회 → {enriched_count}건 보강 완료")
+    return jobs
 
 
 def scrape_jobs(
