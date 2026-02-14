@@ -475,6 +475,8 @@ def main():
                 key = "지역 불일치"
             elif "제외 키워드" in r:
                 key = "제외 키워드"
+            elif "키워드 불일치" in r:
+                key = "키워드 불일치 (제목 미매칭)"
             else:
                 key = r
             reason_counts[key] = reason_counts.get(key, 0) + 1

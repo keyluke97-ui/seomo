@@ -216,6 +216,12 @@ class JobScraper:
         parts = keyword.split()
         return any(part in title for part in parts)
 
+    def _any_keyword_in_title(self, title: str, keywords: List[str]) -> bool:
+        """검색 키워드 중 하나라도 제목에 포함되는지 검증"""
+        if not title or not keywords:
+            return True
+        return any(self._keyword_in_title(title, kw) for kw in keywords)
+
     def _deduplicate_jobs(self, jobs):
         """[FIX] URL 없는 공고도 title+company 키로 중복 제거"""
         unique = []
@@ -313,7 +319,8 @@ class JobScraper:
             try:
                 jobs = self._search_saramin_keyword(
                     keyword, deadline_start, deadline_end, location_filter, max_pages,
-                    company_cd=company_cd, filter_log=filter_log
+                    company_cd=company_cd, filter_log=filter_log,
+                    all_keywords=keywords
                 )
                 all_jobs.extend(jobs)
                 print(f"  사람인 '{keyword}': {len(jobs)}건")
@@ -370,6 +377,7 @@ class JobScraper:
         max_pages: int,
         company_cd: Optional[str] = None,
         filter_log: Optional[List[Dict]] = None,
+        all_keywords: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         jobs = []
 
@@ -411,6 +419,22 @@ class JobScraper:
                     try:
                         job_info = self._parse_saramin_list_item(item)
                         job_info["source"] = "사람인"
+
+                        # [FIX] 키워드-제목 매칭 검증: 사람인 관련도 검색은
+                        # 본문/회사소개 등에서도 매칭하므로 제목에 키워드가 없는
+                        # 엉뚱한 공고가 섞여 나옴 → 제목에 키워드 최소 1개 필요
+                        title = job_info.get("title", "")
+                        check_keywords = all_keywords if all_keywords else [keyword]
+                        if not self._any_keyword_in_title(title, check_keywords):
+                            if filter_log is not None:
+                                filter_log.append({
+                                    "title": title,
+                                    "company": job_info.get("company", ""),
+                                    "source": "사람인",
+                                    "deadline": job_info.get("deadline", ""),
+                                    "reason": f"키워드 불일치 (제목에 검색 키워드 없음)"
+                                })
+                            continue
 
                         if not self._is_within_deadline(job_info, deadline_start, deadline_end):
                             if filter_log is not None:
@@ -519,7 +543,7 @@ class JobScraper:
             try:
                 jobs = self._search_incruit_keyword(
                     keyword, deadline_start, deadline_end, location_filter, max_pages,
-                    filter_log=filter_log
+                    filter_log=filter_log, all_keywords=keywords
                 )
                 all_jobs.extend(jobs)
                 print(f"  인크루트 '{keyword}': {len(jobs)}건")
@@ -529,7 +553,7 @@ class JobScraper:
         print(f"[인크루트] 전체 {len(all_jobs)}건 → 중복제거 {len(result)}건")
         return result
 
-    def _search_incruit_keyword(self, keyword, start, end, location_filter, max_pages, filter_log=None):
+    def _search_incruit_keyword(self, keyword, start, end, location_filter, max_pages, filter_log=None, all_keywords=None):
         """[FIX] location_filter 파라미터 추가"""
         jobs = []
         for page in range(1, max_pages + 1):
@@ -586,6 +610,21 @@ class JobScraper:
                     job = self._parse_incruit_item(item)
                     if job:
                         job["source"] = "인크루트"
+
+                        # [FIX] 키워드-제목 매칭 검증
+                        title = job.get("title", "")
+                        check_keywords = all_keywords if all_keywords else [keyword]
+                        if not self._any_keyword_in_title(title, check_keywords):
+                            if filter_log is not None:
+                                filter_log.append({
+                                    "title": title,
+                                    "company": job.get("company", ""),
+                                    "source": "인크루트",
+                                    "deadline": job.get("deadline", ""),
+                                    "reason": f"키워드 불일치 (제목에 검색 키워드 없음)"
+                                })
+                            continue
+
                         if self._is_within_deadline(job, start, end):
                             jobs.append(job)
                         elif filter_log is not None:
