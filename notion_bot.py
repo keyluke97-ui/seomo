@@ -1,5 +1,12 @@
 """
 notion_bot.py - Notion API 연동 모듈
+
+리팩토링 내역:
+- dead code (return result) 제거
+- 중복 체크 기능 복원 (주석 해제)
+- 근무형태 중복 속성 설정 제거
+- 날짜 파싱 연도 넘김 로직 개선
+- 코드가 사용하는 Notion DB 속성 목록 명시
 """
 import re
 from datetime import datetime, timedelta
@@ -9,35 +16,40 @@ from notion_client import Client
 import streamlit as st
 
 
+# 코드에서 사용하는 Notion DB 속성 목록 (새 DB 만들 때 참고)
+REQUIRED_PROPERTIES = {
+    "공고명": "title",        # 필수 (Title)
+    "링크": "url",            # URL
+    "지원기업": "rich_text",   # Text
+    "지원 마감일": "date",     # Date
+    "직군": "select",         # Select (대학교 행정직, 교직원, 은행, 유학 등)
+    "직무": "rich_text",      # Text
+    "근무형태": "select",     # Select (정규직, 계약직, 인턴 등)
+    "급여": "rich_text",      # Text
+    "담당업무": "rich_text",   # Text
+    "근무시간": "rich_text",   # Text
+    "근무예정일": "rich_text",  # Text
+    "근무기간": "rich_text",   # Text
+    "지원상태": "select",     # Select (접수 전, 서류접수, 면접 등)
+}
+
+
 class NotionBot:
     """Notion 데이터베이스와 연동하여 채용 공고를 저장하는 클래스"""
-    
+
     def __init__(self, token: str = None, database_id: str = None):
-        """
-        NotionBot 초기화
-        
-        Args:
-            token: Notion Integration Token
-            database_id: Notion Database ID
-        """
         self.token = token or st.secrets.get("NOTION_TOKEN", "")
         self.database_id = database_id or st.secrets.get("NOTION_DATABASE_ID", "")
-        
+
         if not self.token or not self.database_id:
             raise ValueError("Notion token과 database_id가 필요합니다.")
-        
+
         self.client = Client(auth=self.token)
-    
+
     def check_duplicate(self, url: str) -> bool:
-        """
-        URL이 이미 데이터베이스에 존재하는지 확인
-        
-        Args:
-            url: 확인할 공고 URL
-            
-        Returns:
-            True if 중복, False if 새 공고
-        """
+        """URL이 이미 데이터베이스에 존재하는지 확인"""
+        if not url:
+            return False
         try:
             response = self.client.databases.query(
                 **{
@@ -54,40 +66,17 @@ class NotionBot:
         except Exception as e:
             print(f"중복 확인 중 오류: {e}")
             return False
-    
+
     def create_job_page(self, job_data: Dict[str, Any]) -> Optional[str]:
-        """
-        채용 공고 페이지 생성
-        
-        Args:
-            job_data: 공고 정보 딕셔너리
-                - title: 공고명
-                - url: 링크
-                - company: 지원기업
-                - deadline: 지원 마감일
-                - job_title: 직무
-                - salary: 급여
-                - responsibilities: 담당업무
-                - type: 근무형태
-                - work_hours: 근무시간
-                - start_date: 근무예정일
-                - duration: 근무기간
-                - body: 상세 본문
-                
-        Returns:
-            생성된 페이지 ID 또는 None
-        """
-        # URL 중복 확인 (임시로 비활성화)
-        # url = job_data.get("url", "")
-        # if url and self.check_duplicate(url):
-        #     return None
-        
-        # 속성 구성
+        """채용 공고 페이지 생성 (중복 체크 포함)"""
+        # [FIX] 중복 체크 복원
+        url = job_data.get("url", "")
+        if url and self.check_duplicate(url):
+            return None  # 중복 → 스킵
+
         properties = self._build_properties(job_data)
-        
-        # 페이지 본문 블록 구성
         children = self._build_content_blocks(job_data.get("body", ""))
-        
+
         try:
             response = self.client.pages.create(
                 parent={"database_id": self.database_id},
@@ -96,171 +85,131 @@ class NotionBot:
             )
             return response.get("id")
         except Exception as e:
-            # 상세한 에러 로깅
             print(f"페이지 생성 중 오류: {e}")
             print(f"  - 제목: {job_data.get('title', 'N/A')}")
             print(f"  - URL: {job_data.get('url', 'N/A')}")
             print(f"  - 설정된 속성 키: {list(properties.keys())}")
             return None
-    
+
     def _build_properties(self, job_data: Dict[str, Any]) -> Dict[str, Any]:
         """Notion 페이지 속성 구성 (한글 속성명 사용)"""
         properties = {}
-        
+
         # 공고명 (제목) - 필수
         title = job_data.get("title", "제목 없음")
-        company = job_data.get("company", "")
-        deadline = job_data.get("deadline", "")
-        job_type = job_data.get("type", "")
-        
-        # 간단한 정보를 제목에 합쳐서 표시
-        subtitle_parts = []
-        if company:
-            subtitle_parts.append(f"🏢 {company}")
-        if deadline:
-            subtitle_parts.append(f"⏰ {deadline}")
-        if job_type:
-            subtitle_parts.append(f"📋 {job_type}")
-        
-        if subtitle_parts:
-            # 사용자의 요청으로 제목만 깔끔하게 표시
-            # full_title = f"{title} | {' | '.join(subtitle_parts)}"
-            pass
-
-        full_title = title  # 제목만 사용
-            
         properties["공고명"] = {
-            "title": [{"text": {"content": full_title[:2000]}}]
+            "title": [{"text": {"content": title[:2000]}}]
         }
-        
-        # 링크 (URL) - 필수
+
+        # 링크 (URL)
         url = job_data.get("url", "")
         if url:
             properties["링크"] = {"url": url}
-        
+
         # 지원기업
+        company = job_data.get("company", "")
         if company:
             properties["지원기업"] = {
                 "rich_text": [{"text": {"content": company[:2000]}}]
             }
-        
+
         # 지원 마감일 (날짜 형식)
-        # 1. 이미 파싱된 날짜가 있으면 우선 사용
+        deadline = job_data.get("deadline", "")
         deadline_date = None
+
         if job_data.get("deadline_date"):
             d_date = job_data["deadline_date"]
             if isinstance(d_date, datetime):
                 deadline_date = d_date.strftime("%Y-%m-%d")
-        
-        # 2. 없으면 문자열 파싱 시도
+
         if not deadline_date:
             deadline_date = self._parse_deadline(deadline)
-            
+
         if deadline_date:
             properties["지원 마감일"] = {"date": {"start": deadline_date}}
-        
-        # 직군 (기존 스크래퍼에서 가져온 job_title과 사용자가 선택한 category 구분)
-        # 1. 사용자가 선택한 '직군' (Select)
+
+        # 직군 (사용자가 선택한 카테고리)
         category = job_data.get("category", "")
         if category:
             properties["직군"] = {"select": {"name": category}}
-            
-        # 2. 공고 내용상의 '모집직무' (Text) -> '직무' 컬럼에 저장
+
+        # 직무 (공고 내용상 모집직무)
         job_title_text = job_data.get("job_title", "")
         if job_title_text:
             properties["직무"] = {
                 "rich_text": [{"text": {"content": job_title_text[:2000]}}]
             }
-        
+
         # 근무형태 (Select)
+        job_type = job_data.get("type", "")
         if job_type:
             properties["근무형태"] = {"select": {"name": job_type}}
+
+        # 급여
         salary = job_data.get("salary", "")
         if salary:
             properties["급여"] = {
                 "rich_text": [{"text": {"content": salary[:2000]}}]
             }
-        
+
         # 담당업무
         responsibilities = job_data.get("responsibilities", "")
         if responsibilities:
             properties["담당업무"] = {
                 "rich_text": [{"text": {"content": responsibilities[:2000]}}]
             }
-        
-        # 근무형태 (Select)
-        if job_type:
-            properties["근무형태"] = {"select": {"name": job_type}}
-        
+
         # 근무시간
         work_hours = job_data.get("work_hours", "")
         if work_hours:
             properties["근무시간"] = {
                 "rich_text": [{"text": {"content": work_hours[:2000]}}]
             }
-        
+
         # 근무예정일
         start_date = job_data.get("start_date", "")
         if start_date:
             properties["근무예정일"] = {
                 "rich_text": [{"text": {"content": start_date[:2000]}}]
             }
-        
+
         # 근무기간
         duration = job_data.get("duration", "")
         if duration:
             properties["근무기간"] = {
                 "rich_text": [{"text": {"content": duration[:2000]}}]
             }
-        
-        # 지원상태 - 기본값: 접수 전 (Notion DB 컬럼명: "지원상태")
+
+        # 지원상태 - 기본값: 접수 전
         properties["지원상태"] = {"select": {"name": "접수 전"}}
-        
+
         return properties
-    
+
     def _parse_deadline(self, deadline_str: str) -> Optional[str]:
-        """
-        다양한 날짜 형식을 ISO 8601로 변환
-        """
+        """다양한 날짜 형식을 ISO 8601로 변환"""
         if not deadline_str:
             return None
-        
+
         deadline_str = deadline_str.strip()
         today = datetime.now()
-        
-        # "오늘마감", "내일마감" 처리
+
         if "오늘" in deadline_str:
             return today.strftime("%Y-%m-%d")
         if "내일" in deadline_str:
             return (today + timedelta(days=1)).strftime("%Y-%m-%d")
-        
+
         # D-N 형식
         d_match = re.match(r'D-(\d+)', deadline_str, re.IGNORECASE)
         if d_match:
             days = int(d_match.group(1))
             result_date = today + timedelta(days=days)
             return result_date.strftime("%Y-%m-%d")
-        
-        # "채용시까지", "상시채용" 등
+
         if any(keyword in deadline_str for keyword in ["채용시", "상시", "수시", "마감시"]):
             return None
-        
+
         try:
-            # ~MM/DD 또는 ~MM.DD 형식 (날짜만 있는 경우)
-            # 날짜 패턴 추출 (숫자.숫자 또는 숫자/숫자)
-            date_pattern = re.search(r'(\d{1,2})[./-](\d{1,2})', deadline_str)
-            if date_pattern:
-                month = int(date_pattern.group(1))
-                day = int(date_pattern.group(2))
-                year = today.year
-                
-                # 현재 월보다 작으면 내년으로 추정 (단, 차이가 많이 날 때만)
-                if month < today.month - 2: 
-                    year += 1
-                
-                return datetime(year, month, day).strftime("%Y-%m-%d")
-                
-            # YYYY.MM.DD 또는 YYYY-MM-DD 형식
+            # YYYY.MM.DD 또는 YYYY-MM-DD (구체적 패턴 우선)
             full_date_match = re.search(r'(\d{4})[./-](\d{1,2})[./-](\d{1,2})', deadline_str)
             if full_date_match:
                 year = int(full_date_match.group(1))
@@ -268,33 +217,46 @@ class NotionBot:
                 day = int(full_date_match.group(3))
                 return datetime(year, month, day).strftime("%Y-%m-%d")
 
+            # MM/DD, MM.DD
+            date_pattern = re.search(r'(\d{1,2})[./-](\d{1,2})', deadline_str)
+            if date_pattern:
+                month = int(date_pattern.group(1))
+                day = int(date_pattern.group(2))
+                year = today.year
+
+                # [FIX] 연도 넘김: 90일 이상 과거면 내년으로
+                try:
+                    target = datetime(year, month, day)
+                    if target < today - timedelta(days=90):
+                        year += 1
+                    return datetime(year, month, day).strftime("%Y-%m-%d")
+                except ValueError:
+                    pass
+
         except Exception:
             pass
-        
+
         # dateutil 파서로 시도
         try:
             parsed = date_parser.parse(deadline_str, fuzzy=True)
             return parsed.strftime("%Y-%m-%d")
         except (ValueError, TypeError):
             pass
-        
+
         return None
-    
+
     def _build_content_blocks(self, body: str) -> List[Dict[str, Any]]:
         """페이지 본문 블록 구성"""
         if not body:
             return []
-        
+
         blocks = []
-        # Notion 블록 텍스트 제한: 2000자
-        # 본문을 단락으로 분할
         paragraphs = body.split("\n\n")
-        
+
         for para in paragraphs:
             if not para.strip():
                 continue
-            
-            # 2000자 제한 처리
+
             text = para.strip()[:2000]
             blocks.append({
                 "object": "block",
@@ -303,26 +265,15 @@ class NotionBot:
                     "rich_text": [{"text": {"content": text}}]
                 }
             })
-        
-        # 블록 수 제한 (Notion API 제한)
+
+        # Notion API 블록 수 제한
         return blocks[:100]
-    
-        return result
-    
+
     def batch_create_jobs(self, jobs: List[Dict[str, Any]], progress_callback=None) -> Dict[str, Any]:
-        """
-        여러 채용 공고를 일괄 저장
-        
-        Args:
-            jobs: 공고 데이터 리스트
-            progress_callback: 진행률 콜백 함수
-            
-        Returns:
-            {"saved": N, "skipped": M, "failed": K, "errors": List[str]}
-        """
+        """여러 채용 공고를 일괄 저장"""
         result = {"saved": 0, "skipped": 0, "failed": 0, "errors": []}
         total = len(jobs)
-        
+
         for i, job in enumerate(jobs):
             try:
                 page_id = self.create_job_page(job)
@@ -335,8 +286,8 @@ class NotionBot:
                 print(error_msg)
                 result["failed"] += 1
                 result["errors"].append(error_msg)
-            
+
             if progress_callback:
                 progress_callback((i + 1) / total)
-        
+
         return result

@@ -1,5 +1,7 @@
 """
 config.py - 직군 및 키워드 설정 관리 모듈
+
+리팩토링: 지역 필터 옵션 추가
 """
 import json
 import os
@@ -40,6 +42,13 @@ JOB_SOURCES = {
     }
 }
 
+# 지역 필터 옵션 (신규)
+LOCATION_OPTIONS = [
+    "서울", "경기", "인천", "부산", "대구", "대전",
+    "광주", "울산", "세종", "강원", "충북", "충남",
+    "전북", "전남", "경북", "경남", "제주"
+]
+
 
 def load_config() -> dict:
     """JSON 파일에서 사용자 설정 로드"""
@@ -49,8 +58,7 @@ def load_config() -> dict:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             pass
-    
-    # 기본 설정 반환
+
     return {
         "job_categories": DEFAULT_JOB_CATEGORIES.copy(),
         "custom_categories": []
@@ -71,7 +79,7 @@ def get_keywords(category: str, config: dict = None) -> list:
     """선택된 직군의 키워드 반환"""
     if config is None:
         config = load_config()
-    
+
     categories = config.get("job_categories", DEFAULT_JOB_CATEGORIES)
     return categories.get(category, [])
 
@@ -80,11 +88,11 @@ def add_category(category_name: str, keywords: list, config: dict = None) -> dic
     """새 직군 추가"""
     if config is None:
         config = load_config()
-    
+
     config["job_categories"][category_name] = keywords
     if category_name not in config.get("custom_categories", []):
         config.setdefault("custom_categories", []).append(category_name)
-    
+
     save_config(config)
     return config
 
@@ -93,7 +101,7 @@ def update_keywords(category: str, keywords: list, config: dict = None) -> dict:
     """직군의 키워드 업데이트"""
     if config is None:
         config = load_config()
-    
+
     config["job_categories"][category] = keywords
     save_config(config)
     return config
@@ -103,5 +111,5 @@ def get_all_categories(config: dict = None) -> list:
     """모든 직군 목록 반환"""
     if config is None:
         config = load_config()
-    
+
     return list(config.get("job_categories", DEFAULT_JOB_CATEGORIES).keys())

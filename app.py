@@ -1,13 +1,18 @@
 """
 app.py - Streamlit 메인 UI
 취준생 맞춤형 채용 공고 자동화 대시보드
+
+리팩토링 내역:
+- 검색 결과 없음 분기 로직 수정
+- 지역 필터 UI 추가
+- scrape_jobs에 location_filter 전달
 """
 import streamlit as st
 from datetime import datetime, timedelta
 from config import (
     load_config, save_config, get_keywords,
     add_category, update_keywords, get_all_categories,
-    JOB_SOURCES
+    JOB_SOURCES, LOCATION_OPTIONS
 )
 from scraper import scrape_jobs
 from notion_bot import NotionBot
@@ -35,23 +40,6 @@ st.markdown("""
     }
     .stButton > button {
         width: 100%;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        padding: 0.75rem 1.5rem;
-        font-size: 1.1rem;
-        font-weight: 600;
-        border-radius: 0.5rem;
-    }
-    .stButton > button:hover {
-        background: linear-gradient(135deg, #5a67d8 0%, #6b46c1 100%);
-    }
-    .result-card {
-        background: #f8fafc;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-left: 4px solid #667eea;
     }
     .tag {
         display: inline-block;
@@ -76,26 +64,30 @@ def init_session_state():
         st.session_state.search_results = []
     if "show_add_category" not in st.session_state:
         st.session_state.show_add_category = False
+    if "scraped_jobs" not in st.session_state:
+        st.session_state.scraped_jobs = []
+    if "search_executed" not in st.session_state:
+        st.session_state.search_executed = False
 
 
 def main():
     """메인 앱"""
     init_session_state()
-    
+
     # 헤더
     st.markdown('<p class="main-header">💼 채용 공고 자동화 대시보드</p>', unsafe_allow_html=True)
     st.markdown('<p class="sub-header">원하는 조건으로 채용 공고를 검색하고 Notion에 자동 저장하세요</p>', unsafe_allow_html=True)
-    
+
     # 메인 컨텐츠
     col1, col2 = st.columns([1, 1])
-    
+
     with col1:
         st.markdown("### 📅 Step 1: 검색 기간 설정")
         st.caption("지원 마감일 기준으로 필터링됩니다")
-        
+
         today = datetime.now().date()
         default_end = today + timedelta(days=30)
-        
+
         date_range = st.date_input(
             "마감일 범위 선택",
             value=(today, default_end),
@@ -103,19 +95,19 @@ def main():
             max_value=today + timedelta(days=365),
             key="date_range"
         )
-        
+
         if isinstance(date_range, tuple) and len(date_range) == 2:
             start_date, end_date = date_range
         else:
             start_date = end_date = date_range
-        
+
         st.markdown("---")
-        
+
         st.markdown("### 🌐 Step 2: 검색 소스 선택")
-        
+
         selected_sources = []
         source_cols = st.columns(2)
-        
+
         for i, (source_name, source_info) in enumerate(JOB_SOURCES.items()):
             with source_cols[i % 2]:
                 if st.checkbox(
@@ -126,41 +118,46 @@ def main():
                 ):
                     if source_info["enabled"] or source_name != "대학교 사이트":
                         selected_sources.append(source_name)
-        
+
         if "대학교 사이트" in selected_sources:
             selected_sources.remove("대학교 사이트")
             st.info("대학교 사이트는 추후 지원 예정입니다.")
-    
+
+        st.markdown("---")
+
+        # 지역 필터 (신규 추가)
+        st.markdown("### 📍 Step 2.5: 지역 필터 (선택)")
+        st.caption("비워두면 전국 공고를 모두 가져옵니다")
+        selected_locations = st.multiselect(
+            "지역 선택",
+            options=LOCATION_OPTIONS,
+            default=[],
+            key="location_filter",
+            label_visibility="collapsed"
+        )
+
     with col2:
         st.header("Step 3: 직군 및 키워드 설정")
-    
-        # 직군 선택
+
         categories = get_all_categories(st.session_state.config)
-        
-        # 세션 상태 초기화 (처음 한 번만)
+
         if "selected_category" not in st.session_state:
             st.session_state.selected_category = categories[0] if categories else "기본"
-        
-        # 탭 대신 라디오 버튼이나 버튼 그룹으로 직관적으로 변경
+
         st.write("직군 선택")
-        
-        # 직군 버튼 생성
-        # +1 for the "add new category" popover
+
         cols = st.columns(len(categories) + 1 if categories else 1)
-        
-        # 선택된 카테고리를 저장할 변수 (버튼 클릭 시 업데이트)
+
         def set_category(cat):
             st.session_state.selected_category = cat
-            st.rerun() # 화면 갱신
-            
+            st.rerun()
+
         for i, cat in enumerate(categories):
             with cols[i]:
-                # 선택된 버튼 강조 (primary vs secondary)
                 btn_type = "primary" if st.session_state.selected_category == cat else "secondary"
                 if st.button(cat, key=f"cat_{i}", type=btn_type, use_container_width=True):
                     set_category(cat)
-                    
-        # 새 직군 추가 버튼 (마지막 컬럼)
+
         with cols[len(categories) if categories else 0]:
             with st.popover("➕", use_container_width=True):
                 new_cat_name = st.text_input("새 직군 이름")
@@ -172,52 +169,33 @@ def main():
                         st.success(f"'{new_cat_name}' 추가됨!")
                         st.rerun()
 
-        # 현재 선택된 직군 가져오기
         selected_category = st.session_state.selected_category
         current_keywords = get_keywords(selected_category, st.session_state.config)
-        
-        # 키워드 수정 UI
+
         st.subheader(f"🏷️ '{selected_category}' 검색 키워드")
         st.caption("키워드를 수정하면 자동 저장됩니다")
-        
+
         keyword_tags = st.text_input(
             "키워드 편집",
             value=", ".join(current_keywords),
             key="keyword_input",
             label_visibility="collapsed"
         )
-        
-        # 키워드 변경 감지 및 저장
+
         new_keywords = [k.strip() for k in keyword_tags.split(",") if k.strip()]
         if new_keywords != current_keywords:
             st.session_state.config = update_keywords(selected_category, new_keywords, st.session_state.config)
             st.success("키워드가 저장되었습니다!", icon="✅")
-        
-        # 현재 키워드 태그 형태로 표시
+
         if new_keywords:
             tags_html = " ".join([f'<span class="tag">{k}</span>' for k in new_keywords])
             st.markdown(f'<div style="margin-top: 0.5rem;">{tags_html}</div>', unsafe_allow_html=True)
-    
+
     st.markdown("---")
-    
+
     # Step 4: 실행 버튼
     st.markdown("### 🚀 Step 4: 실행")
-    
-    col_btn1, col_btn2 = st.columns([1, 1])
-    
-    # 세션 상태 초기화 (검색 결과가 없으면)
-    if "scraped_jobs" not in st.session_state:
-        st.session_state.scraped_jobs = []
-    
-    with col_btn1:
-        # 기존: 공고 수집만 -> 변경: 공고 검색하기 (Flow 1단계)
-        search_button = st.button(
-            "🔍 공고 검색하기",
-            key="search_btn",
-            use_container_width=True,
-            help="Notion에 저장하기 전에 먼저 검색 결과를 확인합니다."
-        )
-    
+
     # 공통 검증
     def validate_inputs():
         if not selected_sources:
@@ -227,64 +205,70 @@ def main():
             st.error("검색 키워드를 입력해주세요.")
             return False
         return True
-    
+
+    search_button = st.button(
+        "🔍 공고 검색하기",
+        key="search_btn",
+        use_container_width=True,
+        help="Notion에 저장하기 전에 먼저 검색 결과를 확인합니다."
+    )
+
     # 1단계: 검색 실행
     if search_button:
         if not validate_inputs():
             st.stop()
-        
-        # 상태 메시지 컨테이너
+
         status_container = st.status("채용 공고를 검색하고 있습니다...", expanded=True)
-        
+
         try:
             start_datetime = datetime.combine(start_date, datetime.min.time())
             end_datetime = datetime.combine(end_date, datetime.max.time())
-            
-            # 진행 상황 콜백
+
             def update_status(msg):
                 status_container.write(f"👉 {msg}")
-            
-            # 스크래핑 실행
+
+            # 지역 필터 전달 (비어있으면 None → 전국)
+            loc_filter = selected_locations if selected_locations else None
+
             jobs = scrape_jobs(
                 sources=selected_sources,
                 keywords=new_keywords,
                 deadline_start=start_datetime,
                 deadline_end=end_datetime,
-                category=selected_category, # 선택된 직군 전달
+                category=selected_category,
+                location_filter=loc_filter,
                 progress_callback=update_status
             )
-            
+
             st.session_state.scraped_jobs = jobs
+            st.session_state.search_executed = True
             status_container.update(label="검색 완료!", state="complete", expanded=False)
-            
+
         except Exception as e:
             status_container.update(label="오류 발생", state="error")
             st.error(f"검색 중 오류가 발생했습니다: {e}")
             import traceback
             st.code(traceback.format_exc())
 
-    # 2단계: 결과 미리보기 및 저장 (검색 결과가 있을 때 표시)
+    # 2단계: 결과 표시
     if st.session_state.scraped_jobs:
         st.markdown("---")
         st.markdown(f"### 📋 검색 결과 확인 ({len(st.session_state.scraped_jobs)}건)")
-        
-        # DataFrame 생성을 위한 데이터 가공
+
         import pandas as pd
-        
-        # 표시할 데이터만 추출
+
         display_data = []
         for job in st.session_state.scraped_jobs:
             display_data.append({
-                "선택": True,  # 기본값 체크
+                "선택": True,
                 "공고명": job.get("title"),
                 "회사명": job.get("company"),
                 "마감일": job.get("deadline"),
                 "링크": job.get("url")
             })
-            
+
         df = pd.DataFrame(display_data)
-        
-        # 데이터 에디터 (체크박스 기능)
+
         edited_df = st.data_editor(
             df,
             column_config={
@@ -298,14 +282,13 @@ def main():
             hide_index=True,
             use_container_width=True
         )
-        
-        # 선택된 공고만 필터링
+
         selected_indices = [
             i for i, row in edited_df.iterrows() if row["선택"]
         ]
-        
+
         col_save, col_info = st.columns([1, 2])
-        
+
         with col_save:
             save_button = st.button(
                 f"💾 선택한 {len(selected_indices)}개 공고 Notion 저장",
@@ -316,32 +299,28 @@ def main():
 
         # 3단계: 저장 실행
         if save_button:
-            # 선택된 원본 데이터 가져오기
             jobs_to_save = [st.session_state.scraped_jobs[i] for i in selected_indices]
-            
-            # Notion 연결 확인
+
             try:
                 notion_token = st.secrets.get("NOTION_TOKEN", "") or st.secrets.get("notion", {}).get("token", "")
                 notion_db_id = st.secrets.get("NOTION_DATABASE_ID", "") or st.secrets.get("notion", {}).get("database_id", "")
-                
+
                 if not notion_token or not notion_db_id or "your-" in notion_token:
                     st.error("⚠️ Notion API 설정이 필요합니다. `.streamlit/secrets.toml` 파일을 확인해주세요.")
                     st.stop()
-                
+
                 notion_bot = NotionBot(notion_token, notion_db_id)
-                
-                # 저장 진행
+
                 save_status = st.status("Notion에 저장 중입니다...", expanded=True)
                 progress_bar = save_status.progress(0)
-                
+
                 def notion_progress(p):
                     progress_bar.progress(int(p * 100))
-                
+
                 result = notion_bot.batch_create_jobs(jobs_to_save, progress_callback=notion_progress)
-                
+
                 save_status.update(label="저장 완료!", state="complete", expanded=False)
-                
-                # 결과 리포트
+
                 if result['failed'] == 0:
                     st.success(f"✅ **{result['saved']}개** 저장 성공! (중복 제외: {result['skipped']}개)")
                     st.balloons()
@@ -350,35 +329,17 @@ def main():
                     with st.expander("실패 상세 내용 보기"):
                         for err in result.get('errors', []):
                             st.text(err)
-                
-                # 바로가기 링크 버튼
+
                 db_url = f"https://www.notion.so/{notion_db_id.replace('-', '')}"
-                st.markdown(f"""
-                    <a href="{db_url}" target="_blank" style="text-decoration: none;">
-                        <button style="
-                            background-color: #4CAF50;
-                            border: none;
-                            color: white;
-                            padding: 10px 24px;
-                            text-align: center;
-                            text-decoration: none;
-                            display: inline-block;
-                            font-size: 16px;
-                            margin: 4px 2px;
-                            cursor: pointer;
-                            border-radius: 4px;
-                            width: 100%;">
-                            👉 내 Notion 페이지 바로가기
-                        </button>
-                    </a>
-                    """, unsafe_allow_html=True)
-                
+                st.link_button("👉 내 Notion 페이지 바로가기", db_url, use_container_width=True)
+
             except Exception as e:
                 st.error(f"Notion 저장 중 오류 발생: {e}")
-                
-    elif search_button: # 검색 버튼 눌렀는데 결과가 없는 경우
-         st.markdown("---")
-         st.info("오늘은 조건에 맞는 새로운 공고가 없네요! ☕\n\n잠시 쉬어가라는 뜻인가 봐요. 내일 다시 확인해보세요!")
+
+    # [FIX] 검색 실행했는데 결과가 없는 경우 — session_state 기반으로 판단
+    elif st.session_state.get("search_executed", False) and not st.session_state.scraped_jobs:
+        st.markdown("---")
+        st.info("오늘은 조건에 맞는 새로운 공고가 없네요! ☕\n\n검색 키워드나 기간을 조정해보세요.")
 
 
 if __name__ == "__main__":
