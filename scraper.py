@@ -41,6 +41,18 @@ MAX_BODY_LENGTH = 2000
 JK_MAX_CONSECUTIVE_FAILS = 3  # Circuit Breaker 임계값
 
 # ──────────────────────────────────────
+# 사이트 내장 지역 필터 코드 매핑
+# ──────────────────────────────────────
+SARAMIN_LOC_CODES = {
+    "서울": "101000", "경기": "102000", "광주": "103000",
+    "대구": "104000", "대전": "105000", "부산": "106000",
+    "울산": "107000", "인천": "108000", "강원": "109000",
+    "경남": "110000", "경북": "111000", "전남": "112000",
+    "전북": "113000", "충북": "114000", "충남": "115000",
+    "제주": "116000", "세종": "118000",
+}
+
+# ──────────────────────────────────────
 # [D] 네거티브 키워드 필터 (제외 목록)
 # ──────────────────────────────────────
 # 전역 기본 네거티브 (모든 직군에 공통 적용)
@@ -300,6 +312,22 @@ class JobScraper:
         print(f"[사람인] 전체 {len(all_jobs)}건 → 중복제거 {len(result)}건")
         return result
 
+    def _build_saramin_url(self, keyword: str, page: int, location_filter: Optional[List[str]]) -> str:
+        """사람인 검색 URL 생성 — 사이트 내장 지역 필터 적용"""
+        base = f"https://www.saramin.co.kr/zf_user/search/recruit?searchword={keyword}&recruitPage={page}&recruitSort=relation&recruitPageCount=40"
+
+        if location_filter:
+            loc_codes = []
+            for loc in location_filter:
+                code = SARAMIN_LOC_CODES.get(loc)
+                if code:
+                    loc_codes.append(code)
+            if loc_codes:
+                # 사람인은 loc_mcd 복수 지정 지원 (쉼표 구분)
+                base += "&loc_mcd=" + ",".join(loc_codes)
+
+        return base
+
     def _search_saramin_keyword(
         self,
         keyword: str,
@@ -311,7 +339,7 @@ class JobScraper:
         jobs = []
 
         for page in range(1, max_pages + 1):
-            url = f"https://www.saramin.co.kr/zf_user/search/recruit?searchword={keyword}&recruitPage={page}&recruitSort=relation&recruitPageCount=40"
+            url = self._build_saramin_url(keyword, page, location_filter)
 
             try:
                 res = requests.get(url, headers=self.headers, timeout=self.timeout)
@@ -332,18 +360,10 @@ class JobScraper:
                         if not self._is_within_deadline(job_info, deadline_start, deadline_end):
                             continue
 
-                        # [FIX] 지역 필터 (공통 메서드 사용)
-                        if not self._check_location(item, location_filter):
-                            continue
-
-                        # 지역 정보 저장
+                        # 지역 정보 저장 (사이트 필터가 이미 적용됨)
                         loc_el = item.select_one('.job_condition span:nth-child(1)')
                         if loc_el:
                             job_info["location"] = loc_el.text.strip()
-
-                        # [FIX] 키워드-타이틀 매칭 검증
-                        if not self._keyword_in_title(job_info["title"], keyword):
-                            continue
 
                         jobs.append(job_info)
                     except Exception:
@@ -475,16 +495,13 @@ class JobScraper:
                     break
 
                 for item in items:
-                    # [FIX] 지역 필터 적용 (사람인과 동일한 공통 메서드)
+                    # 지역 필터 (인크루트는 사이트 내장 필터 없음 → 텍스트 매칭 유지)
                     if not self._check_location(item, location_filter):
                         continue
 
                     job = self._parse_incruit_item(item)
                     if job:
                         job["source"] = "인크루트"
-                        # [FIX] 키워드-타이틀 매칭 검증
-                        if not self._keyword_in_title(job["title"], keyword):
-                            continue
                         if self._is_within_deadline(job, start, end):
                             jobs.append(job)
 
@@ -639,7 +656,7 @@ class JobScraper:
                     parent = link.find_parent('li') or link.find_parent('div', class_=re.compile(r'list|item|post'))
 
                     if parent:
-                        # [FIX] 지역 필터 적용
+                        # 지역 필터 (잡코리아는 사이트 내장 필터 없음 → 텍스트 매칭 유지)
                         if not self._check_location(parent, location_filter):
                             continue
 
@@ -647,10 +664,6 @@ class JobScraper:
                         job_info["title"] = link.text.strip() or "제목 없음"
                         job_info["url"] = full_url
                         job_info["source"] = "잡코리아"
-
-                        # [FIX] 키워드-타이틀 매칭 검증
-                        if not self._keyword_in_title(job_info["title"], keyword):
-                            continue
 
                         # 회사명 셀렉터 다중화
                         corp = parent.select_one(
