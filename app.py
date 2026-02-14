@@ -67,6 +67,8 @@ def init_session_state():
         st.session_state.show_add_category = False
     if "scraped_jobs" not in st.session_state:
         st.session_state.scraped_jobs = []
+    if "filter_log" not in st.session_state:
+        st.session_state.filter_log = []
     if "search_executed" not in st.session_state:
         st.session_state.search_executed = False
 
@@ -274,6 +276,7 @@ def main():
 
         # [FIX] 재검색 시 이전 상태 리셋
         st.session_state.scraped_jobs = []
+        st.session_state.filter_log = []
         st.session_state.search_executed = False
 
         status_container = st.status("채용 공고를 검색하고 있습니다...", expanded=True)
@@ -298,7 +301,7 @@ def main():
             # 제외 키워드 (UI에서 편집한 값 실시간 반영)
             user_neg = [k.strip() for k in st.session_state.get(f"neg_{selected_category}", "").split(",") if k.strip()] or None
 
-            jobs = scrape_jobs(
+            jobs, filter_log = scrape_jobs(
                 sources=selected_sources,
                 keywords=new_keywords,
                 deadline_start=start_datetime,
@@ -311,6 +314,7 @@ def main():
             )
 
             st.session_state.scraped_jobs = jobs
+            st.session_state.filter_log = filter_log
             st.session_state.search_executed = True
             status_container.update(label="검색 완료!", state="complete", expanded=False)
 
@@ -448,6 +452,51 @@ def main():
 
             except Exception as e:
                 st.error(f"Notion 저장 중 오류 발생: {e}")
+
+    # ──────────────────────────────────────
+    # 필터 디버그 패널: 제외된 공고 표시
+    # ──────────────────────────────────────
+    filter_log = st.session_state.get("filter_log", [])
+    if filter_log and st.session_state.get("search_executed", False):
+        import pandas as pd
+
+        st.markdown("---")
+
+        # 제외 사유별 카운트
+        reason_counts = {}
+        for entry in filter_log:
+            r = entry.get("reason", "기타")
+            # 사유를 카테고리로 묶기
+            if "마감일" in r:
+                key = "마감일 범위 밖"
+            elif "지역" in r:
+                key = "지역 불일치"
+            elif "제외 키워드" in r:
+                key = "제외 키워드"
+            else:
+                key = r
+            reason_counts[key] = reason_counts.get(key, 0) + 1
+
+        reason_summary = " / ".join([f"{k} {v}건" for k, v in reason_counts.items()])
+
+        with st.expander(f"🔍 필터링으로 제외된 공고 ({len(filter_log)}건) — {reason_summary}", expanded=False):
+            st.caption("아래 공고들은 필터 조건에 의해 결과에서 제외되었습니다. 필터 설정이 적절한지 확인하세요.")
+
+            filter_df = pd.DataFrame([
+                {
+                    "소스": e.get("source", ""),
+                    "공고명": e.get("title", "")[:50],
+                    "회사명": e.get("company", ""),
+                    "마감일": e.get("deadline", ""),
+                    "제외 사유": e.get("reason", ""),
+                }
+                for e in filter_log[:100]  # 최대 100건
+            ])
+
+            st.dataframe(filter_df, use_container_width=True, hide_index=True)
+
+            if len(filter_log) > 100:
+                st.caption(f"... 외 {len(filter_log) - 100}건 생략")
 
     # [FIX] 검색 실행했는데 결과가 없는 경우 — session_state 기반으로 판단
     elif st.session_state.get("search_executed", False) and not st.session_state.scraped_jobs:
