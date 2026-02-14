@@ -14,7 +14,7 @@ from config import (
     add_category, update_keywords, get_all_categories,
     JOB_SOURCES, LOCATION_OPTIONS
 )
-from scraper import scrape_jobs
+from scraper import scrape_jobs, get_default_filters
 from notion_bot import NotionBot
 
 # 페이지 설정
@@ -191,6 +191,62 @@ def main():
             tags_html = " ".join([f'<span class="tag">{k}</span>' for k in new_keywords])
             st.markdown(f'<div style="margin-top: 0.5rem;">{tags_html}</div>', unsafe_allow_html=True)
 
+    # ──────────────────────────────────────
+    # Step 3.5: 관련성 필터 설정 (네거티브/포지티브)
+    # ──────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🎯 Step 3.5: 관련성 필터")
+    st.caption("검색 결과에서 제외하거나 포함할 키워드를 실시간으로 조정합니다")
+
+    # 선택된 직군의 기본 필터 로드
+    default_filters = get_default_filters(selected_category)
+
+    # 세션 초기화 (직군 변경 시 리셋)
+    filter_key = f"_filter_cat_{selected_category}"
+    if st.session_state.get("_last_filter_cat") != selected_category:
+        st.session_state["_last_filter_cat"] = selected_category
+        st.session_state[f"neg_{selected_category}"] = ", ".join(default_filters["negative"])
+        st.session_state[f"pos_{selected_category}"] = ", ".join(default_filters["positive"])
+
+    filter_col1, filter_col2 = st.columns(2)
+
+    with filter_col1:
+        st.markdown("**🚫 제외 키워드** (네거티브)")
+        st.caption("제목에 포함되면 자동 제외됩니다")
+        neg_input = st.text_area(
+            "제외 키워드",
+            value=st.session_state.get(f"neg_{selected_category}", ", ".join(default_filters["negative"])),
+            key=f"neg_input_{selected_category}",
+            height=100,
+            label_visibility="collapsed",
+            placeholder="미화, 조리, 경비, 청소 ..."
+        )
+        neg_keywords = [k.strip() for k in neg_input.split(",") if k.strip()]
+        # 실시간 저장
+        st.session_state[f"neg_{selected_category}"] = neg_input
+
+        if neg_keywords:
+            neg_tags = " ".join([f'<span style="display:inline-block;background:#fee2e2;color:#dc2626;padding:0.15rem 0.5rem;border-radius:9999px;font-size:0.8rem;margin:0.1rem;">{k}</span>' for k in neg_keywords])
+            st.markdown(neg_tags, unsafe_allow_html=True)
+
+    with filter_col2:
+        st.markdown("**✅ 포함 키워드** (포지티브)")
+        st.caption("제목에 하나라도 포함되어야 통과합니다")
+        pos_input = st.text_area(
+            "포함 키워드",
+            value=st.session_state.get(f"pos_{selected_category}", ", ".join(default_filters["positive"])),
+            key=f"pos_input_{selected_category}",
+            height=100,
+            label_visibility="collapsed",
+            placeholder="행정, 사무, 교직, 조교 ..."
+        )
+        pos_keywords = [k.strip() for k in pos_input.split(",") if k.strip()]
+        st.session_state[f"pos_{selected_category}"] = pos_input
+
+        if pos_keywords:
+            pos_tags = " ".join([f'<span style="display:inline-block;background:#dcfce7;color:#16a34a;padding:0.15rem 0.5rem;border-radius:9999px;font-size:0.8rem;margin:0.1rem;">{k}</span>' for k in pos_keywords])
+            st.markdown(pos_tags, unsafe_allow_html=True)
+
     st.markdown("---")
 
     # Step 4: 실행 버튼
@@ -230,6 +286,10 @@ def main():
             # 지역 필터 전달 (비어있으면 None → 전국)
             loc_filter = selected_locations if selected_locations else None
 
+            # 관련성 필터 (UI에서 편집한 값 실시간 반영)
+            user_neg = [k.strip() for k in st.session_state.get(f"neg_{selected_category}", "").split(",") if k.strip()] or None
+            user_pos = [k.strip() for k in st.session_state.get(f"pos_{selected_category}", "").split(",") if k.strip()] or None
+
             jobs = scrape_jobs(
                 sources=selected_sources,
                 keywords=new_keywords,
@@ -237,6 +297,8 @@ def main():
                 deadline_end=end_datetime,
                 category=selected_category,
                 location_filter=loc_filter,
+                custom_positive=user_pos,
+                custom_negative=user_neg,
                 progress_callback=update_status
             )
 

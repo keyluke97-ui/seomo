@@ -60,16 +60,40 @@ RELEVANCE_FILTERS = {
 DEFAULT_NEGATIVE = ["미화", "조리", "경비", "시설관리", "운전", "청소", "배식", "주방"]
 
 
-def filter_by_relevance(jobs: List[Dict], category: str) -> List[Dict]:
+def get_default_filters(category: str) -> dict:
+    """직군별 기본 필터 반환 (UI 초기값용)"""
+    filters = RELEVANCE_FILTERS.get(category, {})
+    return {
+        "positive": filters.get("positive", [])[:],
+        "negative": filters.get("negative", DEFAULT_NEGATIVE)[:]
+    }
+
+
+def filter_by_relevance(
+    jobs: List[Dict],
+    category: str,
+    custom_positive: Optional[List[str]] = None,
+    custom_negative: Optional[List[str]] = None
+) -> List[Dict]:
     """
     하이브리드 관련성 필터:
     1. 네거티브 키워드 포함 → 무조건 제외
     2. 포지티브 키워드 있으면 → 하나라도 매칭되어야 통과
     3. 포지티브 키워드 없으면 → 네거티브만 필터링
+
+    custom_positive/custom_negative가 주어지면 기본값 대신 사용 (UI 실시간 반영)
     """
-    filters = RELEVANCE_FILTERS.get(category, {})
-    positive = filters.get("positive", [])
-    negative = filters.get("negative", DEFAULT_NEGATIVE)
+    if custom_positive is not None:
+        positive = custom_positive
+    else:
+        filters = RELEVANCE_FILTERS.get(category, {})
+        positive = filters.get("positive", [])
+
+    if custom_negative is not None:
+        negative = custom_negative
+    else:
+        filters = RELEVANCE_FILTERS.get(category, {})
+        negative = filters.get("negative", DEFAULT_NEGATIVE)
 
     # 네거티브가 비어있으면 기본값 사용
     if not negative:
@@ -555,6 +579,8 @@ def scrape_jobs(
     deadline_end: datetime,
     category: str = "",
     location_filter: Optional[List[str]] = None,
+    custom_positive: Optional[List[str]] = None,
+    custom_negative: Optional[List[str]] = None,
     progress_callback=None
 ) -> List[Dict[str, Any]]:
     """통합 스크래핑 함수"""
@@ -584,9 +610,13 @@ def scrape_jobs(
     # 전체 결과 중복 제거
     deduped = scraper._deduplicate_jobs(results)
 
-    # [D] 하이브리드 관련성 필터 적용
+    # [D] 하이브리드 관련성 필터 적용 (UI 커스텀 값 우선)
     if category:
-        filtered = filter_by_relevance(deduped, category)
+        filtered = filter_by_relevance(
+            deduped, category,
+            custom_positive=custom_positive,
+            custom_negative=custom_negative
+        )
         print(f"[필터] {len(deduped)}건 → {len(filtered)}건 (제거: {len(deduped) - len(filtered)}건)")
         return filtered
 
