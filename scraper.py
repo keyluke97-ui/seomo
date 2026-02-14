@@ -293,6 +293,7 @@ class JobScraper:
         deadline_end: datetime,
         location_filter: Optional[List[str]] = None,
         max_pages: int = 10,
+        company_cd: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """사람인 채용 공고 검색 — 모든 키워드 반드시 검색"""
         all_jobs = []
@@ -300,7 +301,8 @@ class JobScraper:
         for keyword in keywords:
             try:
                 jobs = self._search_saramin_keyword(
-                    keyword, deadline_start, deadline_end, location_filter, max_pages
+                    keyword, deadline_start, deadline_end, location_filter, max_pages,
+                    company_cd=company_cd
                 )
                 all_jobs.extend(jobs)
                 print(f"  사람인 '{keyword}': {len(jobs)}건")
@@ -312,10 +314,15 @@ class JobScraper:
         print(f"[사람인] 전체 {len(all_jobs)}건 → 중복제거 {len(result)}건")
         return result
 
-    def _build_saramin_url(self, keyword: str, page: int, location_filter: Optional[List[str]]) -> str:
-        """사람인 검색 URL 생성 — 사이트 내장 지역 필터 적용"""
+    def _build_saramin_url(
+        self, keyword: str, page: int,
+        location_filter: Optional[List[str]] = None,
+        company_cd: Optional[str] = None,
+    ) -> str:
+        """사람인 검색 URL 생성 — 지역 + 기업형태 서버사이드 필터"""
         base = f"https://www.saramin.co.kr/zf_user/search/recruit?searchword={keyword}&recruitPage={page}&recruitSort=relation&recruitPageCount=40"
 
+        # 지역 필터
         if location_filter:
             loc_codes = []
             for loc in location_filter:
@@ -323,8 +330,11 @@ class JobScraper:
                 if code:
                     loc_codes.append(code)
             if loc_codes:
-                # 사람인은 loc_mcd 복수 지정 지원 (쉼표 구분)
                 base += "&loc_mcd=" + ",".join(loc_codes)
+
+        # 기업형태 필터 (company_cd: "0,1,2" 형태)
+        if company_cd:
+            base += "&company_cd=" + company_cd
 
         return base
 
@@ -334,12 +344,13 @@ class JobScraper:
         deadline_start: datetime,
         deadline_end: datetime,
         location_filter: Optional[List[str]],
-        max_pages: int
+        max_pages: int,
+        company_cd: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         jobs = []
 
         for page in range(1, max_pages + 1):
-            url = self._build_saramin_url(keyword, page, location_filter)
+            url = self._build_saramin_url(keyword, page, location_filter, company_cd=company_cd)
 
             try:
                 res = requests.get(url, headers=self.headers, timeout=self.timeout)
@@ -852,17 +863,27 @@ def scrape_jobs(
     category: str = "",
     location_filter: Optional[List[str]] = None,
     custom_negative: Optional[List[str]] = None,
+    custom_company_cd: Optional[str] = None,
     progress_callback=None
 ) -> List[Dict[str, Any]]:
     """통합 스크래핑 함수"""
+    from config import CATEGORY_COMPANY_FILTER
+
     scraper = JobScraper()
     results = []
+
+    # 기업형태 필터: UI 커스텀 > 직군 기본값 > None
+    company_cd = custom_company_cd
+    if company_cd is None and category:
+        company_cd = CATEGORY_COMPANY_FILTER.get(category)
+    if company_cd:
+        print(f"[필터] 기업형태 서버사이드 필터 적용: company_cd={company_cd}")
 
     for i, source in enumerate(sources):
         jobs = []
 
         if source == "사람인":
-            jobs = scraper.search_saramin(keywords, deadline_start, deadline_end, location_filter)
+            jobs = scraper.search_saramin(keywords, deadline_start, deadline_end, location_filter, company_cd=company_cd)
         elif source == "인크루트":
             jobs = scraper.search_incruit(keywords, deadline_start, deadline_end, location_filter)
         elif source == "잡코리아":
