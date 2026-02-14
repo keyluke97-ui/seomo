@@ -31,7 +31,7 @@ JOB_SOURCES = {
         "search_url": "https://search.incruit.com/list/search.asp"
     },
     "잡코리아": {
-        "enabled": True,
+        "enabled": False,  # 기본 비활성화: 서버 IP 차단 이슈 (로컬 실행 시 수동 활성화 가능)
         "base_url": "https://www.jobkorea.co.kr",
         "search_url": "https://www.jobkorea.co.kr/Search"
     },
