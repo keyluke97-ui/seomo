@@ -216,11 +216,14 @@ class JobScraper:
         parts = keyword.split()
         return any(part in title for part in parts)
 
-    def _any_keyword_in_title(self, title: str, keywords: List[str]) -> bool:
-        """검색 키워드 중 하나라도 제목에 포함되는지 검증"""
+    def _any_keyword_in_title(self, title: str, keywords: List[str],
+                               company: str = "") -> bool:
+        """검색 키워드 중 하나라도 제목 OR 회사명에 포함되는지 검증
+        (회사명 매칭 추가: '대학교' 키워드 → 회사명 'OO대학교'도 통과)"""
         if not title or not keywords:
             return True
-        return any(self._keyword_in_title(title, kw) for kw in keywords)
+        text = f"{title} {company}" if company else title
+        return any(self._keyword_in_title(text, kw) for kw in keywords)
 
     def _deduplicate_jobs(self, jobs):
         """[FIX] URL 없는 공고도 title+company 키로 중복 제거"""
@@ -337,22 +340,20 @@ class JobScraper:
         location_filter: Optional[List[str]] = None,
         company_cd: Optional[str] = None,
     ) -> str:
-        """사람인 검색 URL 생성 — /zf_user/search 엔드포인트 (company_cd 지원)"""
+        """사람인 검색 URL 생성 — /zf_user/search/recruit 엔드포인트
+        NOTE: /search/recruit만 .item_recruit 셀렉터 호환됨
+        NOTE: company_cd는 이 엔드포인트에서 무시됨 → 클라이언트사이드 필터로 대체"""
         from urllib.parse import quote
 
-        # /zf_user/search 엔드포인트만 company_cd 파라미터를 지원함
-        # /zf_user/search/recruit 엔드포인트는 company_cd를 무시함
         base = (
-            f"https://www.saramin.co.kr/zf_user/search"
-            f"?searchType=search"
-            f"&searchword={quote(keyword)}"
+            f"https://www.saramin.co.kr/zf_user/search/recruit"
+            f"?searchword={quote(keyword)}"
             f"&recruitPage={page}"
             f"&recruitSort=relation"
             f"&recruitPageCount=40"
-            f"&search_done=y"
         )
 
-        # 지역 필터
+        # 지역 필터 (서버사이드 — 작동 확인됨)
         if location_filter:
             loc_codes = []
             for loc in location_filter:
@@ -360,11 +361,7 @@ class JobScraper:
                 if code:
                     loc_codes.append(code)
             if loc_codes:
-                base += "&loc_mcd=" + quote(",".join(loc_codes))
-
-        # 기업형태 필터 (company_cd: "4,5,7" 형태)
-        if company_cd:
-            base += "&company_cd=" + quote(company_cd)
+                base += "&loc_mcd=" + ",".join(loc_codes)
 
         return base
 
@@ -400,19 +397,9 @@ class JobScraper:
                     continue
 
                 soup = BeautifulSoup(res.text, 'html.parser')
-
-                # [FIX] 셀렉터 fallback: /zf_user/search (통합검색) 구조 대응
                 items = soup.select('.item_recruit')
-                if not items:
-                    # 통합검색 페이지의 채용 탭 구조
-                    items = soup.select('.content_recruit .item_recruit')
-                if not items:
-                    items = soup.select('.recruit_list .list_item')
-                if not items:
-                    items = soup.select('[class*="recruit"] .item_recruit')
 
                 if not items:
-                    print(f"사람인 page {page}: 항목 없음 (셀렉터 매칭 실패) → 중단")
                     break
 
                 for item in items:
@@ -420,12 +407,13 @@ class JobScraper:
                         job_info = self._parse_saramin_list_item(item)
                         job_info["source"] = "사람인"
 
-                        # [FIX] 키워드-제목 매칭 검증: 사람인 관련도 검색은
+                        # [FIX] 키워드-제목/회사명 매칭 검증: 사람인 관련도 검색은
                         # 본문/회사소개 등에서도 매칭하므로 제목에 키워드가 없는
-                        # 엉뚱한 공고가 섞여 나옴 → 제목에 키워드 최소 1개 필요
+                        # 엉뚱한 공고가 섞여 나옴 → 제목+회사명에 키워드 최소 1개 필요
                         title = job_info.get("title", "")
+                        company_name = job_info.get("company", "")
                         check_keywords = all_keywords if all_keywords else [keyword]
-                        if not self._any_keyword_in_title(title, check_keywords):
+                        if not self._any_keyword_in_title(title, check_keywords, company_name):
                             if filter_log is not None:
                                 filter_log.append({
                                     "title": title,
@@ -614,10 +602,11 @@ class JobScraper:
                     if job:
                         job["source"] = "인크루트"
 
-                        # [FIX] 키워드-제목 매칭 검증
+                        # [FIX] 키워드-제목/회사명 매칭 검증
                         title = job.get("title", "")
+                        company_name = job.get("company", "")
                         check_keywords = all_keywords if all_keywords else [keyword]
-                        if not self._any_keyword_in_title(title, check_keywords):
+                        if not self._any_keyword_in_title(title, check_keywords, company_name):
                             if filter_log is not None:
                                 filter_log.append({
                                     "title": title,
@@ -1004,7 +993,7 @@ def scrape_jobs(
     if company_cd is None and category:
         company_cd = CATEGORY_COMPANY_FILTER.get(category)
     if company_cd:
-        print(f"[필터] 기업형태 서버사이드 필터 적용: company_cd={company_cd}")
+        print(f"[필터] 기업형태 코드: company_cd={company_cd} (참고용 — /search/recruit에서는 미적용)")
 
     for i, source in enumerate(sources):
         jobs = []
