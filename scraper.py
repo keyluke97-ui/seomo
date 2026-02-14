@@ -239,7 +239,7 @@ class JobScraper:
 
         try:
             if any(x in text for x in ["상시", "채용시", "수시"]):
-                return now + timedelta(days=365)
+                return None  # 상시채용은 마감일 없음 → _is_within_deadline에서 무조건 통과
 
             if "오늘" in text:
                 return now
