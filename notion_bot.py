@@ -9,6 +9,7 @@ notion_bot.py - Notion API 연동 모듈
 - 코드가 사용하는 Notion DB 속성 목록 명시
 """
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from dateutil import parser as date_parser
@@ -198,8 +199,8 @@ class NotionBot:
         if "내일" in deadline_str:
             return (today + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # D-N 형식
-        d_match = re.match(r'D-(\d+)', deadline_str, re.IGNORECASE)
+        # [FIX] D-N 형식 (re.search로 변경 — "~ D-3" 등도 매칭)
+        d_match = re.search(r'D-(\d+)', deadline_str, re.IGNORECASE)
         if d_match:
             days = int(d_match.group(1))
             result_date = today + timedelta(days=days)
@@ -289,5 +290,9 @@ class NotionBot:
 
             if progress_callback:
                 progress_callback((i + 1) / total)
+
+            # [FIX] Notion API 레이트 리밋 대응 (초당 3회 제한)
+            if i < total - 1:
+                time.sleep(0.35)
 
         return result
