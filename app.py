@@ -487,10 +487,15 @@ def main():
         url_entries = [e for e in filter_log if e.get("title", "").startswith("[검색URL]")]
         actual_filter_entries = [e for e in filter_log if not e.get("title", "").startswith("[검색URL]")]
 
-        # 실제 검색 URL 표시
+        # 실제 검색 URL + 서버 디버그 정보 표시
         if url_entries:
             with st.expander(f"🔗 실제 검색 URL ({len(url_entries)}개)", expanded=False):
                 st.caption("크롤러가 사용한 실제 검색 URL입니다. 브라우저에서 열어 결과를 직접 확인하세요.")
+
+                # 서버 시간 & 검색 범위 표시 (타임존 디버그)
+                from datetime import datetime as _dt
+                st.info(f"🕐 서버 시간: {_dt.now().strftime('%Y-%m-%d %H:%M:%S')} / 검색 범위: {start_date} ~ {end_date}")
+
                 for entry in url_entries:
                     url_text = entry.get("reason", "").replace("🔗 ", "")
                     st.markdown(f"**{entry.get('title', '')}**")

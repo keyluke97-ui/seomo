@@ -438,12 +438,15 @@ class JobScraper:
 
                         if not self._is_within_deadline(job_info, deadline_start, deadline_end):
                             if filter_log is not None:
+                                parsed = job_info.get("deadline_date")
+                                parsed_str = parsed.strftime("%Y-%m-%d") if parsed else "파싱실패"
+                                range_str = f"{deadline_start.strftime('%Y-%m-%d')}~{deadline_end.strftime('%Y-%m-%d')}"
                                 filter_log.append({
                                     "title": job_info.get("title", ""),
                                     "company": job_info.get("company", ""),
                                     "source": "사람인",
                                     "deadline": job_info.get("deadline", ""),
-                                    "reason": f"마감일 범위 밖 ({job_info.get('deadline', '?')})"
+                                    "reason": f"마감일 범위 밖 (원문: {job_info.get('deadline', '?')} → 파싱: {parsed_str} / 범위: {range_str})"
                                 })
                             continue
 
@@ -628,12 +631,15 @@ class JobScraper:
                         if self._is_within_deadline(job, start, end):
                             jobs.append(job)
                         elif filter_log is not None:
+                            parsed = job.get("deadline_date")
+                            parsed_str = parsed.strftime("%Y-%m-%d") if parsed else "파싱실패"
+                            range_str = f"{start.strftime('%Y-%m-%d')}~{end.strftime('%Y-%m-%d')}"
                             filter_log.append({
                                 "title": job.get("title", ""),
                                 "company": job.get("company", ""),
                                 "source": "인크루트",
                                 "deadline": job.get("deadline", ""),
-                                "reason": f"마감일 범위 밖 ({job.get('deadline', '?')})"
+                                "reason": f"마감일 범위 밖 (원문: {job.get('deadline', '?')} → 파싱: {parsed_str} / 범위: {range_str})"
                             })
 
             except Exception:

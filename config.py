@@ -31,7 +31,7 @@ JOB_SOURCES = {
         "search_url": "https://search.incruit.com/list/search.asp"
     },
     "잡코리아": {
-        "enabled": True,
+        "enabled": False,
         "base_url": "https://www.jobkorea.co.kr",
         "search_url": "https://www.jobkorea.co.kr/Search"
     },
