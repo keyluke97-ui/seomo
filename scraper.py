@@ -280,10 +280,9 @@ class JobScraper:
         deadline_start: datetime,
         deadline_end: datetime,
         location_filter: Optional[List[str]] = None,
-        max_pages: int = 5,
-        max_results: int = 30
+        max_pages: int = 10,
     ) -> List[Dict[str, Any]]:
-        """사람인 채용 공고 검색"""
+        """사람인 채용 공고 검색 — 모든 키워드 반드시 검색"""
         all_jobs = []
 
         for keyword in keywords:
@@ -292,14 +291,14 @@ class JobScraper:
                     keyword, deadline_start, deadline_end, location_filter, max_pages
                 )
                 all_jobs.extend(jobs)
-                if len(all_jobs) >= max_results:
-                    break
+                print(f"  사람인 '{keyword}': {len(jobs)}건")
             except Exception as e:
                 print(f"사람인 키워드 '{keyword}' 검색 중 오류: {e}")
                 continue
 
         result = self._deduplicate_jobs(all_jobs)
-        return result[:max_results]
+        print(f"[사람인] 전체 {len(all_jobs)}건 → 중복제거 {len(result)}건")
+        return result
 
     def _search_saramin_keyword(
         self,
@@ -428,10 +427,9 @@ class JobScraper:
         deadline_start: datetime,
         deadline_end: datetime,
         location_filter: Optional[List[str]] = None,
-        max_pages: int = 5,
-        max_results: int = 30
+        max_pages: int = 10,
     ) -> List[Dict[str, Any]]:
-        """인크루트 검색"""
+        """인크루트 검색 — 모든 키워드 반드시 검색"""
         all_jobs = []
         for keyword in keywords:
             try:
@@ -439,12 +437,12 @@ class JobScraper:
                     keyword, deadline_start, deadline_end, location_filter, max_pages
                 )
                 all_jobs.extend(jobs)
-                if len(all_jobs) >= max_results:
-                    break
+                print(f"  인크루트 '{keyword}': {len(jobs)}건")
             except Exception as e:
                 print(f"인크루트 오류: {e}")
         result = self._deduplicate_jobs(all_jobs)
-        return result[:max_results]
+        print(f"[인크루트] 전체 {len(all_jobs)}건 → 중복제거 {len(result)}건")
+        return result
 
     def _search_incruit_keyword(self, keyword, start, end, location_filter, max_pages):
         """[FIX] location_filter 파라미터 추가"""
@@ -548,10 +546,9 @@ class JobScraper:
         deadline_start: datetime,
         deadline_end: datetime,
         location_filter: Optional[List[str]] = None,
-        max_pages: int = 3,
-        max_results: int = 30
+        max_pages: int = 5,
     ) -> List[Dict[str, Any]]:
-        """잡코리아 검색"""
+        """잡코리아 검색 — 모든 키워드 반드시 검색 (Circuit Breaker 제외)"""
         all_jobs = []
         for keyword in keywords:
             try:
@@ -559,12 +556,12 @@ class JobScraper:
                     keyword, deadline_start, deadline_end, location_filter, max_pages
                 )
                 all_jobs.extend(jobs)
-                if len(all_jobs) >= max_results:
-                    break
+                print(f"  잡코리아 '{keyword}': {len(jobs)}건")
             except Exception as e:
                 print(f"잡코리아 키워드 '{keyword}' 오류: {e}")
         result = self._deduplicate_jobs(all_jobs)
-        return result[:max_results]
+        print(f"[잡코리아] 전체 {len(all_jobs)}건 → 중복제거 {len(result)}건")
+        return result
 
     def _search_jobkorea_keyword(self, keyword, start, end, location_filter, max_pages):
         """[FIX-JK] cloudscraper + Session 쿠키 + Circuit Breaker"""
