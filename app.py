@@ -13,7 +13,6 @@ from config import (
     load_config, save_config, get_keywords,
     add_category, update_keywords, get_all_categories,
     JOB_SOURCES, LOCATION_OPTIONS,
-    SARAMIN_COMPANY_TYPES, CATEGORY_COMPANY_FILTER
 )
 from scraper import scrape_jobs, get_default_negative, enrich_jobs
 from notion_bot import NotionBot
@@ -137,29 +136,6 @@ def main():
             default=["서울", "경기"],
             key="location_filter",
             label_visibility="collapsed"
-        )
-
-        st.markdown("---")
-
-        # [NEW] 기업형태 필터 — 사람인 서버사이드 필터
-        st.markdown("### 🏢 Step 2.7: 기업형태 필터")
-        st.caption("사람인 검색 시 서버에서 기업형태를 사전 필터링합니다 (노이즈 감소)")
-        company_type_options = list(SARAMIN_COMPANY_TYPES.keys())
-        # 직군별 기본값 가져오기
-        _sel_cat = st.session_state.get("selected_category", "")
-        _default_cd = CATEGORY_COMPANY_FILTER.get(_sel_cat)
-        _default_types = []
-        if _default_cd:
-            _cd_to_name = {v: k for k, v in SARAMIN_COMPANY_TYPES.items()}
-            _default_types = [_cd_to_name[c] for c in _default_cd.split(",") if c in _cd_to_name]
-
-        selected_company_types = st.multiselect(
-            "기업형태 선택",
-            options=company_type_options,
-            default=_default_types,
-            key="company_type_filter",
-            label_visibility="collapsed",
-            help="비워두면 전체 기업형태로 검색합니다"
         )
 
     with col2:
@@ -291,13 +267,6 @@ def main():
             # 지역 필터 전달 (비어있으면 None → 전국)
             loc_filter = selected_locations if selected_locations else None
 
-            # 기업형태 필터 → company_cd 문자열 변환
-            company_cd = None
-            if selected_company_types:
-                codes = [SARAMIN_COMPANY_TYPES[t] for t in selected_company_types if t in SARAMIN_COMPANY_TYPES]
-                if codes:
-                    company_cd = ",".join(codes)
-
             # 제외 키워드 (UI에서 편집한 값 실시간 반영)
             user_neg = [k.strip() for k in st.session_state.get(f"neg_{selected_category}", "").split(",") if k.strip()] or None
 
@@ -309,7 +278,6 @@ def main():
                 category=selected_category,
                 location_filter=loc_filter,
                 custom_negative=user_neg,
-                custom_company_cd=company_cd,
                 progress_callback=update_status
             )
 
@@ -475,8 +443,6 @@ def main():
                 key = "지역 불일치"
             elif "제외 키워드" in r:
                 key = "제외 키워드"
-            elif "키워드 불일치" in r:
-                key = "키워드 불일치 (제목 미매칭)"
             else:
                 key = r
             reason_counts[key] = reason_counts.get(key, 0) + 1

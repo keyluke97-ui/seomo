@@ -312,7 +312,6 @@ class JobScraper:
         deadline_end: datetime,
         location_filter: Optional[List[str]] = None,
         max_pages: int = 10,
-        company_cd: Optional[str] = None,
         filter_log: Optional[List[Dict]] = None,
     ) -> List[Dict[str, Any]]:
         """사람인 채용 공고 검색 — 모든 키워드 반드시 검색"""
@@ -322,8 +321,7 @@ class JobScraper:
             try:
                 jobs = self._search_saramin_keyword(
                     keyword, deadline_start, deadline_end, location_filter, max_pages,
-                    company_cd=company_cd, filter_log=filter_log,
-                    all_keywords=keywords
+                    filter_log=filter_log,
                 )
                 all_jobs.extend(jobs)
                 print(f"  사람인 '{keyword}': {len(jobs)}건")
@@ -338,11 +336,8 @@ class JobScraper:
     def _build_saramin_url(
         self, keyword: str, page: int,
         location_filter: Optional[List[str]] = None,
-        company_cd: Optional[str] = None,
     ) -> str:
-        """사람인 검색 URL 생성 — /zf_user/search/recruit 엔드포인트
-        NOTE: /search/recruit만 .item_recruit 셀렉터 호환됨
-        NOTE: company_cd는 이 엔드포인트에서 무시됨 → 클라이언트사이드 필터로 대체"""
+        """사람인 검색 URL 생성 — /zf_user/search/recruit 엔드포인트"""
         from urllib.parse import quote
 
         base = (
@@ -372,14 +367,12 @@ class JobScraper:
         deadline_end: datetime,
         location_filter: Optional[List[str]],
         max_pages: int,
-        company_cd: Optional[str] = None,
         filter_log: Optional[List[Dict]] = None,
-        all_keywords: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         jobs = []
 
         for page in range(1, max_pages + 1):
-            url = self._build_saramin_url(keyword, page, location_filter, company_cd=company_cd)
+            url = self._build_saramin_url(keyword, page, location_filter)
 
             # 첫 페이지 URL을 filter_log에 기록 (디버그용)
             if page == 1 and filter_log is not None:
@@ -406,23 +399,6 @@ class JobScraper:
                     try:
                         job_info = self._parse_saramin_list_item(item)
                         job_info["source"] = "사람인"
-
-                        # [FIX] 키워드-제목/회사명 매칭 검증: 사람인 관련도 검색은
-                        # 본문/회사소개 등에서도 매칭하므로 제목에 키워드가 없는
-                        # 엉뚱한 공고가 섞여 나옴 → 제목+회사명에 키워드 최소 1개 필요
-                        title = job_info.get("title", "")
-                        company_name = job_info.get("company", "")
-                        check_keywords = all_keywords if all_keywords else [keyword]
-                        if not self._any_keyword_in_title(title, check_keywords, company_name):
-                            if filter_log is not None:
-                                filter_log.append({
-                                    "title": title,
-                                    "company": job_info.get("company", ""),
-                                    "source": "사람인",
-                                    "deadline": job_info.get("deadline", ""),
-                                    "reason": f"키워드 불일치 (제목에 검색 키워드 없음)"
-                                })
-                            continue
 
                         if not self._is_within_deadline(job_info, deadline_start, deadline_end):
                             if filter_log is not None:
@@ -534,7 +510,7 @@ class JobScraper:
             try:
                 jobs = self._search_incruit_keyword(
                     keyword, deadline_start, deadline_end, location_filter, max_pages,
-                    filter_log=filter_log, all_keywords=keywords
+                    filter_log=filter_log,
                 )
                 all_jobs.extend(jobs)
                 print(f"  인크루트 '{keyword}': {len(jobs)}건")
@@ -544,7 +520,7 @@ class JobScraper:
         print(f"[인크루트] 전체 {len(all_jobs)}건 → 중복제거 {len(result)}건")
         return result
 
-    def _search_incruit_keyword(self, keyword, start, end, location_filter, max_pages, filter_log=None, all_keywords=None):
+    def _search_incruit_keyword(self, keyword, start, end, location_filter, max_pages, filter_log=None):
         """[FIX] location_filter 파라미터 추가"""
         jobs = []
         for page in range(1, max_pages + 1):
@@ -601,21 +577,6 @@ class JobScraper:
                     job = self._parse_incruit_item(item)
                     if job:
                         job["source"] = "인크루트"
-
-                        # [FIX] 키워드-제목/회사명 매칭 검증
-                        title = job.get("title", "")
-                        company_name = job.get("company", "")
-                        check_keywords = all_keywords if all_keywords else [keyword]
-                        if not self._any_keyword_in_title(title, check_keywords, company_name):
-                            if filter_log is not None:
-                                filter_log.append({
-                                    "title": title,
-                                    "company": job.get("company", ""),
-                                    "source": "인크루트",
-                                    "deadline": job.get("deadline", ""),
-                                    "reason": f"키워드 불일치 (제목에 검색 키워드 없음)"
-                                })
-                            continue
 
                         if self._is_within_deadline(job, start, end):
                             jobs.append(job)
@@ -978,28 +939,18 @@ def scrape_jobs(
     category: str = "",
     location_filter: Optional[List[str]] = None,
     custom_negative: Optional[List[str]] = None,
-    custom_company_cd: Optional[str] = None,
     progress_callback=None
 ) -> tuple:
     """통합 스크래핑 함수 — (결과 리스트, 필터 로그) 튜플 반환"""
-    from config import CATEGORY_COMPANY_FILTER
-
     scraper = JobScraper()
     results = []
     filter_log = []  # 제외된 공고 추적
-
-    # 기업형태 필터: UI 커스텀 > 직군 기본값 > None
-    company_cd = custom_company_cd
-    if company_cd is None and category:
-        company_cd = CATEGORY_COMPANY_FILTER.get(category)
-    if company_cd:
-        print(f"[필터] 기업형태 코드: company_cd={company_cd} (참고용 — /search/recruit에서는 미적용)")
 
     for i, source in enumerate(sources):
         jobs = []
 
         if source == "사람인":
-            jobs = scraper.search_saramin(keywords, deadline_start, deadline_end, location_filter, company_cd=company_cd, filter_log=filter_log)
+            jobs = scraper.search_saramin(keywords, deadline_start, deadline_end, location_filter, filter_log=filter_log)
         elif source == "인크루트":
             jobs = scraper.search_incruit(keywords, deadline_start, deadline_end, location_filter, filter_log=filter_log)
         elif source == "잡코리아":
