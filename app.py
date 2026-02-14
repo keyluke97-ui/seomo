@@ -125,13 +125,13 @@ def main():
 
         st.markdown("---")
 
-        # 지역 필터 (신규 추가)
-        st.markdown("### 📍 Step 2.5: 지역 필터 (선택)")
-        st.caption("비워두면 전국 공고를 모두 가져옵니다")
+        # [B] 지역 필터 — 기본값 서울/경기
+        st.markdown("### 📍 Step 2.5: 지역 필터")
+        st.caption("기본: 서울/경기 | 전국 검색하려면 선택 해제하세요")
         selected_locations = st.multiselect(
             "지역 선택",
             options=LOCATION_OPTIONS,
-            default=[],
+            default=["서울", "경기"],
             key="location_filter",
             label_visibility="collapsed"
         )

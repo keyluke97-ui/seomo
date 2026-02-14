@@ -2,12 +2,14 @@
 scraper.py - 웹 크롤러 모듈 (Requests + BeautifulSoup)
 경량화 버전 (메모리 최적화)
 
-리팩토링 내역:
+리팩토링 v2:
+- [A] 인크루트 인코딩 cp949 강제 (apparent_encoding 오탐 수정)
+- [C] 잡코리아 셀렉터 다중화 + 헤더 강화 + early exit
+- [D] 하이브리드 키워드 관련성 필터 (포지티브 + 네거티브)
 - 잡코리아 파서 들여쓰기 버그 수정
 - 지역 필터를 config 기반으로 변경 (하드코딩 제거)
 - scrape_jobs progress 콜백 버그 수정
 - 타임아웃 설정 외부화
-- 인크루트 인코딩 처리 개선
 - 날짜 파싱 연도 넘김 로직 개선
 """
 import requests
@@ -21,8 +23,79 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 기본 설정
-DEFAULT_TIMEOUT = 15  # 기존 10초 → 15초 (느린 시간대 대응)
-MAX_BODY_LENGTH = 2000  # 상세 본문 최대 길이
+DEFAULT_TIMEOUT = 15
+MAX_BODY_LENGTH = 2000
+
+# ──────────────────────────────────────
+# [D] 하이브리드 키워드 관련성 필터
+# ──────────────────────────────────────
+# 직군별 포지티브/네거티브 키워드 (config에서 관리 가능하도록 dict)
+RELEVANCE_FILTERS = {
+    "대학교 행정직": {
+        "positive": ["행정", "사무", "교직", "조교", "비서", "총무", "경리", "회계",
+                      "인사", "대외", "기획", "입학", "학사", "교무", "산학", "연구",
+                      "전산", "도서", "홍보", "재무", "감사"],
+        "negative": ["미화", "조리", "경비", "시설관리", "운전", "청소", "배식",
+                      "주방", "세탁", "보안", "주차", "조경", "용역"]
+    },
+    "교직원": {
+        "positive": ["행정", "사무", "교직", "조교", "비서", "총무", "경리", "회계",
+                      "인사", "대외", "기획", "입학", "학사", "교무", "산학", "연구",
+                      "전산", "도서", "홍보", "교수", "강사", "교원"],
+        "negative": ["미화", "조리", "경비", "시설관리", "운전", "청소", "배식",
+                      "주방", "세탁", "보안", "주차", "조경", "용역"]
+    },
+    "은행": {
+        "positive": ["은행", "금융", "텔러", "창구", "대출", "심사", "여신", "수신",
+                      "PB", "자산관리", "펀드", "보험", "증권"],
+        "negative": ["경비", "미화", "청소", "운전"]
+    },
+    "유학": {
+        "positive": ["유학", "어학", "해외", "상담", "컨설팅", "비자", "유학원"],
+        "negative": []
+    },
+}
+
+# 전역 기본 네거티브 (모든 직군에 적용)
+DEFAULT_NEGATIVE = ["미화", "조리", "경비", "시설관리", "운전", "청소", "배식", "주방"]
+
+
+def filter_by_relevance(jobs: List[Dict], category: str) -> List[Dict]:
+    """
+    하이브리드 관련성 필터:
+    1. 네거티브 키워드 포함 → 무조건 제외
+    2. 포지티브 키워드 있으면 → 하나라도 매칭되어야 통과
+    3. 포지티브 키워드 없으면 → 네거티브만 필터링
+    """
+    filters = RELEVANCE_FILTERS.get(category, {})
+    positive = filters.get("positive", [])
+    negative = filters.get("negative", DEFAULT_NEGATIVE)
+
+    # 네거티브가 비어있으면 기본값 사용
+    if not negative:
+        negative = DEFAULT_NEGATIVE
+
+    filtered = []
+    for job in jobs:
+        title = job.get("title", "")
+
+        # 1단계: 네거티브 필터 (제목에 포함되면 제거)
+        if any(neg in title for neg in negative):
+            continue
+
+        # 2단계: 포지티브 필터 (설정된 경우, 하나라도 매칭 필요)
+        if positive:
+            if any(pos in title for pos in positive):
+                filtered.append(job)
+            # 포지티브에 매칭 안 되면 → 회사명으로 한번 더 체크
+            elif any(pos in job.get("company", "") for pos in positive):
+                filtered.append(job)
+            # 그래도 안 되면 → 제외
+        else:
+            # 포지티브 없으면 네거티브만 통과하면 OK
+            filtered.append(job)
+
+    return filtered
 
 
 class JobScraper:
@@ -31,10 +104,12 @@ class JobScraper:
     def __init__(self, timeout: int = DEFAULT_TIMEOUT):
         self.timeout = timeout
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Connection": "keep-alive"
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Cache-Control": "max-age=0",
         }
 
     def close(self):
@@ -181,7 +256,7 @@ class JobScraper:
             return detail_info
 
     # ──────────────────────────────────────
-    # 인크루트
+    # [A] 인크루트 — 인코딩 cp949 강제 지정
     # ──────────────────────────────────────
     def search_incruit(
         self,
@@ -220,11 +295,9 @@ class JobScraper:
             try:
                 res = requests.get(url, params=params, headers=self.headers, timeout=self.timeout)
 
-                # 인크루트 인코딩 자동 감지 (EUC-KR / UTF-8 혼재 대응)
-                if res.apparent_encoding:
-                    res.encoding = res.apparent_encoding
-                else:
-                    res.encoding = 'utf-8'
+                # [FIX-A] 인크루트는 EUC-KR 계열 — cp949 강제 지정
+                # apparent_encoding이 ISO-8859-1 등으로 오탐하는 문제 해결
+                res.encoding = 'cp949'
 
                 if res.status_code != 200:
                     continue
@@ -284,7 +357,7 @@ class JobScraper:
             return None
 
     # ──────────────────────────────────────
-    # 잡코리아 (들여쓰기 버그 수정됨)
+    # [C] 잡코리아 — 셀렉터 다중화 + 헤더 강화 + early exit
     # ──────────────────────────────────────
     def search_jobkorea(
         self,
@@ -292,7 +365,7 @@ class JobScraper:
         deadline_start: datetime,
         deadline_end: datetime,
         location_filter: Optional[List[str]] = None,
-        max_pages: int = 5,
+        max_pages: int = 3,
         max_results: int = 30
     ) -> List[Dict[str, Any]]:
         """잡코리아 검색"""
@@ -303,27 +376,60 @@ class JobScraper:
                 all_jobs.extend(jobs)
                 if len(all_jobs) >= max_results:
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"잡코리아 키워드 '{keyword}' 오류: {e}")
         result = self._deduplicate_jobs(all_jobs)
         return result[:max_results]
 
     def _search_jobkorea_keyword(self, keyword, start, end, max_pages):
         jobs = []
+
+        # [FIX-C] 잡코리아 전용 헤더 (봇 탐지 우회 강화)
+        jk_headers = {
+            **self.headers,
+            "Referer": "https://www.jobkorea.co.kr/",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
+
         for page in range(1, max_pages + 1):
             url = f"https://www.jobkorea.co.kr/Search/?stext={keyword}&Page_No={page}"
             try:
-                res = requests.get(url, headers=self.headers, timeout=self.timeout)
+                res = requests.get(url, headers=jk_headers, timeout=self.timeout)
                 if res.status_code != 200:
+                    print(f"잡코리아 HTTP {res.status_code} (page {page})")
                     continue
 
                 soup = BeautifulSoup(res.text, 'html.parser')
+
+                # [FIX-C] 셀렉터 다중화 — 잡코리아 구조 변경 대응
+                # 1차: 기존 패턴
                 links = soup.select("a[href*='/Recruit/GI_Read/']")
+                # 2차: 새 구조 (class 기반)
+                if not links:
+                    links = soup.select(".post-list-info a[href*='Recruit']")
+                # 3차: data-attr 기반
+                if not links:
+                    links = soup.select("a[data-gno]")
+                # 4차: 더 넓은 범위
+                if not links:
+                    links = soup.select(".list-default a[href*='jobkorea.co.kr']")
+
+                # [FIX-C] early exit — 결과 없으면 다음 페이지 불필요
+                if not links:
+                    print(f"잡코리아 page {page}: 결과 없음 → 중단")
+                    break
 
                 seen_urls = set()
 
                 for link in links:
-                    href = link['href']
+                    href = link.get('href', '')
+                    if not href:
+                        continue
+
                     full_url = "https://www.jobkorea.co.kr" + href if href.startswith("/") else href
                     base_url = full_url.split("?")[0]
 
@@ -331,19 +437,27 @@ class JobScraper:
                         continue
                     seen_urls.add(base_url)
 
-                    # [FIX] 들여쓰기 수정 — for link 루프 내부로 복원
-                    parent = link.find_parent('li')
+                    # parent 탐색 (li, div, article 등 다양한 구조 대응)
+                    parent = link.find_parent('li') or link.find_parent('div', class_=re.compile(r'list|item|post'))
 
                     if parent:
                         job_info = self._get_base_job_info()
                         job_info["title"] = link.text.strip() or "제목 없음"
                         job_info["url"] = full_url
 
-                        corp = parent.select_one('.name, .corp-name, .post-list-corp a')
+                        # 회사명 셀렉터 다중화
+                        corp = parent.select_one(
+                            '.name, .corp-name, .post-list-corp a, '
+                            '.company-name, [class*="corp"] a, [class*="company"]'
+                        )
                         if corp:
                             job_info["company"] = corp.text.strip()
 
-                        date_item = parent.select_one('.date, .deadline, .option .date')
+                        # 마감일 셀렉터 다중화
+                        date_item = parent.select_one(
+                            '.date, .deadline, .option .date, '
+                            '[class*="date"], [class*="deadline"]'
+                        )
                         if date_item:
                             d_text = date_item.text.strip()
                             d_text = re.sub(r'D-\d+', '', d_text).strip()
@@ -356,7 +470,8 @@ class JobScraper:
                         if self._is_within_deadline(job_info, start, end):
                             jobs.append(job_info)
 
-            except Exception:
+            except Exception as e:
+                print(f"잡코리아 page {page} 오류: {e}")
                 continue
         return jobs
 
@@ -420,7 +535,6 @@ class JobScraper:
             if match:
                 month, day = map(int, match.groups())
                 year = now.year
-                # [FIX] 연도 넘김 개선: 현재보다 90일 이상 과거면 내년으로 판단
                 try:
                     target = datetime(year, month, day)
                     if target < now - timedelta(days=90):
@@ -428,7 +542,7 @@ class JobScraper:
                         target = datetime(year, month, day)
                     return target
                 except ValueError:
-                    pass  # 잘못된 날짜 (예: 2/30)
+                    pass
         except Exception:
             pass
         return None
@@ -448,7 +562,7 @@ def scrape_jobs(
     results = []
 
     for i, source in enumerate(sources):
-        jobs = []  # [FIX] 소스별 jobs 변수 초기화 (NameError 방지)
+        jobs = []
 
         if source == "사람인":
             jobs = scraper.search_saramin(keywords, deadline_start, deadline_end, location_filter)
@@ -468,4 +582,12 @@ def scrape_jobs(
             job["category"] = category
 
     # 전체 결과 중복 제거
-    return scraper._deduplicate_jobs(results)
+    deduped = scraper._deduplicate_jobs(results)
+
+    # [D] 하이브리드 관련성 필터 적용
+    if category:
+        filtered = filter_by_relevance(deduped, category)
+        print(f"[필터] {len(deduped)}건 → {len(filtered)}건 (제거: {len(deduped) - len(filtered)}건)")
+        return filtered
+
+    return deduped
