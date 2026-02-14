@@ -330,8 +330,20 @@ class JobScraper:
         location_filter: Optional[List[str]] = None,
         company_cd: Optional[str] = None,
     ) -> str:
-        """사람인 검색 URL 생성 — 지역 + 기업형태 서버사이드 필터"""
-        base = f"https://www.saramin.co.kr/zf_user/search/recruit?searchword={keyword}&recruitPage={page}&recruitSort=relation&recruitPageCount=40"
+        """사람인 검색 URL 생성 — /zf_user/search 엔드포인트 (company_cd 지원)"""
+        from urllib.parse import quote
+
+        # /zf_user/search 엔드포인트만 company_cd 파라미터를 지원함
+        # /zf_user/search/recruit 엔드포인트는 company_cd를 무시함
+        base = (
+            f"https://www.saramin.co.kr/zf_user/search"
+            f"?searchType=search"
+            f"&searchword={quote(keyword)}"
+            f"&recruitPage={page}"
+            f"&recruitSort=relation"
+            f"&recruitPageCount=40"
+            f"&search_done=y"
+        )
 
         # 지역 필터
         if location_filter:
@@ -341,11 +353,11 @@ class JobScraper:
                 if code:
                     loc_codes.append(code)
             if loc_codes:
-                base += "&loc_mcd=" + ",".join(loc_codes)
+                base += "&loc_mcd=" + quote(",".join(loc_codes))
 
-        # 기업형태 필터 (company_cd: "0,1,2" 형태)
+        # 기업형태 필터 (company_cd: "4,5,7" 형태)
         if company_cd:
-            base += "&company_cd=" + company_cd
+            base += "&company_cd=" + quote(company_cd)
 
         return base
 
@@ -364,15 +376,35 @@ class JobScraper:
         for page in range(1, max_pages + 1):
             url = self._build_saramin_url(keyword, page, location_filter, company_cd=company_cd)
 
+            # 첫 페이지 URL을 filter_log에 기록 (디버그용)
+            if page == 1 and filter_log is not None:
+                filter_log.append({
+                    "title": f"[검색URL] 사람인 '{keyword}'",
+                    "company": "",
+                    "source": "사람인",
+                    "deadline": "",
+                    "reason": f"🔗 {url}"
+                })
+
             try:
                 res = requests.get(url, headers=self.headers, timeout=self.timeout)
                 if res.status_code != 200:
                     continue
 
                 soup = BeautifulSoup(res.text, 'html.parser')
+
+                # [FIX] 셀렉터 fallback: /zf_user/search (통합검색) 구조 대응
                 items = soup.select('.item_recruit')
+                if not items:
+                    # 통합검색 페이지의 채용 탭 구조
+                    items = soup.select('.content_recruit .item_recruit')
+                if not items:
+                    items = soup.select('.recruit_list .list_item')
+                if not items:
+                    items = soup.select('[class*="recruit"] .item_recruit')
 
                 if not items:
+                    print(f"사람인 page {page}: 항목 없음 (셀렉터 매칭 실패) → 중단")
                     break
 
                 for item in items:
@@ -509,6 +541,17 @@ class JobScraper:
                 "kw": keyword,
                 "startno": startno
             }
+
+            # 첫 페이지 URL을 filter_log에 기록 (디버그용)
+            if page == 1 and filter_log is not None:
+                full_url = f"{url}?col=job&kw={keyword}&startno=1"
+                filter_log.append({
+                    "title": f"[검색URL] 인크루트 '{keyword}'",
+                    "company": "",
+                    "source": "인크루트",
+                    "deadline": "",
+                    "reason": f"🔗 {full_url}"
+                })
 
             try:
                 res = requests.get(url, params=params, headers=self.headers, timeout=self.timeout)

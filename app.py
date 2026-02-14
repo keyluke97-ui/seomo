@@ -462,9 +462,11 @@ def main():
 
         st.markdown("---")
 
-        # 제외 사유별 카운트
+        # 제외 사유별 카운트 (검색URL 엔트리 제외)
         reason_counts = {}
         for entry in filter_log:
+            if entry.get("title", "").startswith("[검색URL]"):
+                continue  # URL 로그는 카운트에서 제외
             r = entry.get("reason", "기타")
             # 사유를 카테고리로 묶기
             if "마감일" in r:
@@ -479,7 +481,21 @@ def main():
 
         reason_summary = " / ".join([f"{k} {v}건" for k, v in reason_counts.items()])
 
-        with st.expander(f"🔍 필터링으로 제외된 공고 ({len(filter_log)}건) — {reason_summary}", expanded=False):
+        # 검색 URL과 필터 로그 분리
+        url_entries = [e for e in filter_log if e.get("title", "").startswith("[검색URL]")]
+        actual_filter_entries = [e for e in filter_log if not e.get("title", "").startswith("[검색URL]")]
+
+        # 실제 검색 URL 표시
+        if url_entries:
+            with st.expander(f"🔗 실제 검색 URL ({len(url_entries)}개)", expanded=False):
+                st.caption("크롤러가 사용한 실제 검색 URL입니다. 브라우저에서 열어 결과를 직접 확인하세요.")
+                for entry in url_entries:
+                    url_text = entry.get("reason", "").replace("🔗 ", "")
+                    st.markdown(f"**{entry.get('title', '')}**")
+                    st.code(url_text, language=None)
+
+        # 제외된 공고 표시
+        with st.expander(f"🔍 필터링으로 제외된 공고 ({len(actual_filter_entries)}건) — {reason_summary}", expanded=False):
             st.caption("아래 공고들은 필터 조건에 의해 결과에서 제외되었습니다. 필터 설정이 적절한지 확인하세요.")
 
             filter_df = pd.DataFrame([
@@ -490,13 +506,13 @@ def main():
                     "마감일": e.get("deadline", ""),
                     "제외 사유": e.get("reason", ""),
                 }
-                for e in filter_log[:100]  # 최대 100건
+                for e in actual_filter_entries[:100]  # 최대 100건
             ])
 
             st.dataframe(filter_df, use_container_width=True, hide_index=True)
 
-            if len(filter_log) > 100:
-                st.caption(f"... 외 {len(filter_log) - 100}건 생략")
+            if len(actual_filter_entries) > 100:
+                st.caption(f"... 외 {len(actual_filter_entries) - 100}건 생략")
 
     # [FIX] 검색 실행했는데 결과가 없는 경우 — session_state 기반으로 판단
     elif st.session_state.get("search_executed", False) and not st.session_state.scraped_jobs:
