@@ -84,21 +84,12 @@ def main():
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.markdown("### 📅 Step 1: 검색 기간 설정")
-        st.caption("이 날짜 이후에 마감되는 공고만 표시됩니다 (아직 지원 가능한 공고)")
-
+        st.markdown("### 📅 Step 1: 마감 기준")
         today = datetime.now().date()
+        st.info(f"📌 오늘({today.strftime('%m/%d')}) 이후 마감인 공고만 표시합니다")
 
-        start_date_input = st.date_input(
-            "기준일 (이 날짜 이후 마감 공고만 표시)",
-            value=today,
-            min_value=today - timedelta(days=7),
-            max_value=today + timedelta(days=365),
-            key="start_date"
-        )
-
-        start_date = start_date_input
-        end_date = start_date + timedelta(days=365)  # 상한선 없음 (1년 버퍼)
+        start_date = today
+        end_date = today + timedelta(days=365)  # 내부용 (상한선 없음)
 
         st.markdown("---")
 
