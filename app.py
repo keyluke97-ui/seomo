@@ -85,23 +85,20 @@ def main():
 
     with col1:
         st.markdown("### 📅 Step 1: 검색 기간 설정")
-        st.caption("지원 마감일 기준으로 필터링됩니다")
+        st.caption("이 날짜 이후에 마감되는 공고만 표시됩니다 (아직 지원 가능한 공고)")
 
         today = datetime.now().date()
-        default_end = today + timedelta(days=30)
 
-        date_range = st.date_input(
-            "마감일 범위 선택",
-            value=(today, default_end),
-            min_value=today,
+        start_date_input = st.date_input(
+            "기준일 (이 날짜 이후 마감 공고만 표시)",
+            value=today,
+            min_value=today - timedelta(days=7),
             max_value=today + timedelta(days=365),
-            key="date_range"
+            key="start_date"
         )
 
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            start_date, end_date = date_range
-        else:
-            start_date = end_date = date_range
+        start_date = start_date_input
+        end_date = start_date + timedelta(days=365)  # 상한선 없음 (1년 버퍼)
 
         st.markdown("---")
 

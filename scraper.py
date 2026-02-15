@@ -255,12 +255,15 @@ class JobScraper:
         return unique
 
     def _is_within_deadline(self, job_info, start, end):
+        """마감일 필터: 아직 마감되지 않은 공고만 통과 (deadline >= start)
+        상한(end)은 적용하지 않음 — 마감이 먼 공고도 지원 가능하므로 포함"""
         if not job_info.get("deadline_date"):
-            return True
+            return True  # 상시채용 등 마감일 없으면 통과
         deadline = job_info["deadline_date"]
         if hasattr(deadline, 'tzinfo') and deadline.tzinfo:
             deadline = deadline.replace(tzinfo=None)
-        return start <= deadline <= end
+        # 마감일이 검색 시작일 이후면 통과 (아직 열려있는 공고)
+        return deadline >= start
 
     def _parse_deadline_to_datetime(self, text: str) -> Optional[datetime]:
         if not text:
