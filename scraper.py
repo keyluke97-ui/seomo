@@ -52,6 +52,18 @@ SARAMIN_LOC_CODES = {
     "제주": "116000", "세종": "118000",
 }
 
+# 사람인 통합검색 company_cd (전체 기업형태)
+SARAMIN_COMPANY_ALL = "0,1,2,3,4,5,6,7,9,10"
+
+# 인크루트 지역코드 (rgn2 파라미터용)
+INCRUIT_REGION_CODES = {
+    "서울": "11", "부산": "12", "대구": "13", "인천": "14",
+    "광주": "15", "대전": "16", "울산": "17", "세종": "18",
+    "경기": "19", "강원": "20", "충북": "21", "충남": "22",
+    "전남": "23", "전북": "24", "경북": "25", "경남": "26",
+    "제주": "27",
+}
+
 # ──────────────────────────────────────
 # [D] 네거티브 키워드 필터 (제외 목록)
 # ──────────────────────────────────────
@@ -337,18 +349,25 @@ class JobScraper:
         self, keyword: str, page: int,
         location_filter: Optional[List[str]] = None,
     ) -> str:
-        """사람인 검색 URL 생성 — /zf_user/search/recruit 엔드포인트"""
+        """사람인 검색 URL 생성 — /zf_user/search 통합검색 엔드포인트
+        (서버사이드 지역 + 기업형태 필터 적용)"""
         from urllib.parse import quote
 
         base = (
-            f"https://www.saramin.co.kr/zf_user/search/recruit"
-            f"?searchword={quote(keyword)}"
+            f"https://www.saramin.co.kr/zf_user/search"
+            f"?searchType=search"
+            f"&searchword={quote(keyword)}"
+            f"&company_cd={SARAMIN_COMPANY_ALL}"
+            f"&search_optional_item=y"
+            f"&search_done=y"
+            f"&panel_count=y"
+            f"&preview=y"
             f"&recruitPage={page}"
             f"&recruitSort=relation"
             f"&recruitPageCount=40"
         )
 
-        # 지역 필터 (서버사이드 — 작동 확인됨)
+        # 지역 필터 (서버사이드)
         if location_filter:
             loc_codes = []
             for loc in location_filter:
@@ -387,10 +406,40 @@ class JobScraper:
             try:
                 res = requests.get(url, headers=self.headers, timeout=self.timeout)
                 if res.status_code != 200:
+                    print(f"사람인 HTTP {res.status_code} (page {page})")
                     continue
 
                 soup = BeautifulSoup(res.text, 'html.parser')
+
+                # 멀티 셀렉터: 통합검색(.item_recruit) → recruit_info_list 내 div → 폴백
                 items = soup.select('.item_recruit')
+                selector_used = '.item_recruit'
+
+                if not items:
+                    # 통합검색 페이지: #recruit_info_list 내부 아이템
+                    container = soup.select_one('#recruit_info_list')
+                    if container:
+                        items = container.select('[class*="item"]')
+                        selector_used = '#recruit_info_list [class*=item]'
+                    if not items and container:
+                        # 직접 자식 div 중 링크가 있는 것
+                        items = [div for div in container.select('div')
+                                 if div.select_one('a[href*="recruit"]') or div.select_one('h2 a')]
+                        selector_used = '#recruit_info_list div(link)'
+
+                if not items:
+                    # 마지막 폴백: 페이지 전체에서 채용 링크 포함 블록
+                    items = soup.select('.common_recruilt')
+                    selector_used = '.common_recruilt'
+
+                if page == 1:
+                    print(f"  사람인 셀렉터: {selector_used} → {len(items)}개 아이템")
+                    if filter_log is not None:
+                        filter_log.append({
+                            "title": f"[디버그] 사람인 셀렉터",
+                            "company": "", "source": "사람인", "deadline": "",
+                            "reason": f"셀렉터: {selector_used} → {len(items)}개 (HTML크기: {len(res.text)})"
+                        })
 
                 if not items:
                     break
@@ -399,6 +448,9 @@ class JobScraper:
                     try:
                         job_info = self._parse_saramin_list_item(item)
                         job_info["source"] = "사람인"
+
+                        if not job_info.get("title"):
+                            continue
 
                         if not self._is_within_deadline(job_info, deadline_start, deadline_end):
                             if filter_log is not None:
@@ -414,7 +466,7 @@ class JobScraper:
                                 })
                             continue
 
-                        # 지역 정보 저장 (사이트 필터가 이미 적용됨)
+                        # 지역 정보 저장 (서버사이드 필터가 이미 적용됨)
                         loc_el = item.select_one('.job_condition span:nth-child(1)')
                         if loc_el:
                             job_info["location"] = loc_el.text.strip()
@@ -433,26 +485,51 @@ class JobScraper:
         job_info = self._get_base_job_info()
 
         try:
+            # 제목: .job_tit a → h2 a → 첫번째 링크 폴백
             title_tag = item.select_one('.job_tit a')
+            if not title_tag:
+                title_tag = item.select_one('h2 a')
+            if not title_tag:
+                title_tag = item.select_one('a[href*="/recruit/"]')
+            if not title_tag:
+                title_tag = item.select_one('a[href*="rec_idx"]')
+
             if title_tag:
                 job_info["title"] = title_tag.text.strip()
-                job_info["url"] = "https://www.saramin.co.kr" + title_tag['href']
+                href = title_tag.get('href', '')
+                if href:
+                    if href.startswith('/'):
+                        job_info["url"] = "https://www.saramin.co.kr" + href
+                    elif href.startswith('http'):
+                        job_info["url"] = href
 
+            # 회사명: .corp_name a → .company_nm → 폴백
             corp_tag = item.select_one('.corp_name a')
+            if not corp_tag:
+                corp_tag = item.select_one('.company_nm a, .company_nm')
+            if not corp_tag:
+                corp_tag = item.select_one('[class*="corp"] a, [class*="company"]')
             if corp_tag:
                 job_info["company"] = corp_tag.text.strip()
 
+            # 마감일: .job_date .date → .date → [class*=date]
             date_tag = item.select_one('.job_date .date')
+            if not date_tag:
+                date_tag = item.select_one('.date')
+            if not date_tag:
+                date_tag = item.select_one('[class*="date"]')
             if date_tag:
                 job_info["deadline"] = date_tag.text.strip()
                 job_info["deadline_date"] = self._parse_deadline_to_datetime(job_info["deadline"])
 
+            # 조건 (고용형태, 급여)
             conditions = item.select('.job_condition span')
+            if not conditions:
+                conditions = item.select('[class*="condition"] span, .job_meta span')
             for cond in conditions:
                 text = cond.text.strip()
                 if any(t in text for t in ["정규직", "계약직", "인턴", "파견직", "아르바이트"]):
                     job_info["type"] = text
-                # [Phase1] 급여 추출 (목록 페이지)
                 if any(s in text for s in ["만원", "연봉", "월급", "시급", "회사내규", "면접후", "협의", "급여"]):
                     if not job_info["salary"]:
                         job_info["salary"] = text
@@ -520,59 +597,101 @@ class JobScraper:
         print(f"[인크루트] 전체 {len(all_jobs)}건 → 중복제거 {len(result)}건")
         return result
 
-    def _search_incruit_keyword(self, keyword, start, end, location_filter, max_pages, filter_log=None):
-        """[FIX] location_filter 파라미터 추가"""
-        jobs = []
-        for page in range(1, max_pages + 1):
-            startno = (page - 1) * 30 + 1
+    def _build_incruit_url(self, keyword, page, location_filter=None):
+        """인크루트 검색 URL 생성 — searchjob.asp 엔드포인트 (서버사이드 지역필터)"""
+        from urllib.parse import quote
 
-            url = "https://search.incruit.com/list/search.asp"
-            params = {
-                "col": "job",
-                "kw": keyword,
-                "startno": startno
-            }
+        startno = (page - 1) * 30 + 1
+
+        # 지역필터가 있으면 searchjob.asp (rgn2 지원), 없으면 기존 search.asp
+        if location_filter:
+            rgn_codes = []
+            for loc in location_filter:
+                code = INCRUIT_REGION_CODES.get(loc)
+                if code:
+                    rgn_codes.append(code)
+
+            if rgn_codes:
+                rgn_param = ",".join(rgn_codes)
+                url = (
+                    f"https://job.incruit.com/jobdb_list/searchjob.asp"
+                    f"?kw={quote(keyword, encoding='euc-kr')}"
+                    f"&rgn2={rgn_param}"
+                    f"&startno={startno}"
+                )
+                return url, "searchjob"
+
+        # 폴백: 기존 search.asp (지역필터 없음)
+        url = (
+            f"https://search.incruit.com/list/search.asp"
+            f"?col=job&kw={quote(keyword, encoding='euc-kr')}"
+            f"&startno={startno}"
+        )
+        return url, "search"
+
+    def _search_incruit_keyword(self, keyword, start, end, location_filter, max_pages, filter_log=None):
+        """인크루트 검색 — 서버사이드 지역필터(rgn2) 우선 사용"""
+        jobs = []
+        endpoint_type = None
+
+        for page in range(1, max_pages + 1):
+            url, endpoint_type = self._build_incruit_url(keyword, page, location_filter)
 
             # 첫 페이지 URL을 filter_log에 기록 (디버그용)
             if page == 1 and filter_log is not None:
-                full_url = f"{url}?col=job&kw={keyword}&startno=1"
                 filter_log.append({
                     "title": f"[검색URL] 인크루트 '{keyword}'",
                     "company": "",
                     "source": "인크루트",
                     "deadline": "",
-                    "reason": f"🔗 {full_url}"
+                    "reason": f"🔗 {url} (엔드포인트: {endpoint_type})"
                 })
 
             try:
-                res = requests.get(url, params=params, headers=self.headers, timeout=self.timeout)
+                res = requests.get(url, headers=self.headers, timeout=self.timeout)
 
                 # [FIX-A] 인크루트는 EUC-KR 계열 — cp949 강제 지정
                 res.encoding = 'cp949'
 
                 if res.status_code != 200:
+                    print(f"인크루트 HTTP {res.status_code} (page {page})")
                     continue
 
                 soup = BeautifulSoup(res.text, 'html.parser')
+
+                # searchjob.asp와 search.asp의 셀렉터가 다를 수 있음
                 items = soup.select('.c_row')
                 if not items:
                     items = soup.select('.clist_vv li')
+                if not items:
+                    # searchjob.asp 전용 셀렉터 시도
+                    items = soup.select('.n_job_list li, .list_item, .recruit_list li')
+
+                if page == 1:
+                    print(f"  인크루트 '{keyword}' 엔드포인트={endpoint_type}: {len(items)}개 아이템")
+                    if filter_log is not None:
+                        filter_log.append({
+                            "title": f"[디버그] 인크루트 셀렉터",
+                            "company": "", "source": "인크루트", "deadline": "",
+                            "reason": f"아이템: {len(items)}개 (HTML크기: {len(res.text)}, 엔드포인트: {endpoint_type})"
+                        })
 
                 if not items:
                     break
 
                 for item in items:
-                    # 지역 필터 (인크루트는 사이트 내장 필터 없음 → 텍스트 매칭 유지)
-                    if not self._check_location(item, location_filter):
-                        # 로그용으로 제목만 빠르게 추출
-                        if filter_log is not None:
-                            _link = item.select_one('a')
-                            _title = _link.text.strip() if _link else "?"
-                            filter_log.append({
-                                "title": _title, "company": "", "source": "인크루트",
-                                "deadline": "", "reason": "지역 불일치 (텍스트 매칭)"
-                            })
-                        continue
+                    # searchjob.asp는 서버사이드 지역필터 적용됨 → 클라이언트 필터 스킵
+                    # search.asp는 서버사이드 지역필터 없음 → 클라이언트 폴백
+                    if endpoint_type == "search" and location_filter:
+                        if not self._check_location(item, location_filter):
+                            if filter_log is not None:
+                                _link = item.select_one('a')
+                                _title = _link.text.strip() if _link else "?"
+                                filter_log.append({
+                                    "title": _title, "company": "", "source": "인크루트",
+                                    "deadline": "", "reason": "지역 불일치 (텍스트 매칭 폴백)"
+                                })
+                            continue
 
                     job = self._parse_incruit_item(item)
                     if job:
@@ -592,7 +711,8 @@ class JobScraper:
                                 "reason": f"마감일 범위 밖 (원문: {job.get('deadline', '?')} → 파싱: {parsed_str} / 범위: {range_str})"
                             })
 
-            except Exception:
+            except Exception as e:
+                print(f"인크루트 page {page} 오류: {e}")
                 continue
         return jobs
 
