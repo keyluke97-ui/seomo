@@ -411,34 +411,33 @@ class JobScraper:
 
                 soup = BeautifulSoup(res.text, 'html.parser')
 
-                # 멀티 셀렉터: 통합검색(.item_recruit) → recruit_info_list 내 div → 폴백
-                items = soup.select('.item_recruit')
-                selector_used = '.item_recruit'
-
-                if not items:
-                    # 통합검색 페이지: #recruit_info_list 내부 아이템
-                    container = soup.select_one('#recruit_info_list')
-                    if container:
-                        items = container.select('[class*="item"]')
-                        selector_used = '#recruit_info_list [class*=item]'
-                    if not items and container:
-                        # 직접 자식 div 중 링크가 있는 것
-                        items = [div for div in container.select('div')
-                                 if div.select_one('a[href*="recruit"]') or div.select_one('h2 a')]
-                        selector_used = '#recruit_info_list div(link)'
-
-                if not items:
-                    # 마지막 폴백: 페이지 전체에서 채용 링크 포함 블록
-                    items = soup.select('.common_recruilt')
-                    selector_used = '.common_recruilt'
+                # ── 멀티 셀렉터: 순차 시도 ──
+                items, selector_used = self._find_saramin_items(soup)
 
                 if page == 1:
                     print(f"  사람인 셀렉터: {selector_used} → {len(items)}개 아이템")
                     if filter_log is not None:
+                        # HTML 구조 자동 탐지 (디버그)
+                        debug_info = f"셀렉터: {selector_used} → {len(items)}개 (HTML크기: {len(res.text)})"
+                        if not items:
+                            # 0건이면 HTML 클래스 목록 + 채용링크 수 로그
+                            all_classes = set()
+                            for tag in soup.find_all(True, class_=True):
+                                for cls in tag.get('class', []):
+                                    if any(k in cls.lower() for k in ['recruit', 'job', 'item', 'list', 'search', 'result', 'content']):
+                                        all_classes.add(f"{tag.name}.{cls}")
+                            recruit_links = soup.select('a[href*="recruit"], a[href*="rec_idx"], a[href*="jobs/relay"]')
+                            debug_info += f" | 관련클래스: {sorted(all_classes)[:20]} | 채용링크: {len(recruit_links)}개"
+                            if recruit_links:
+                                sample = recruit_links[0]
+                                parent = sample.find_parent()
+                                if parent:
+                                    p_classes = ' '.join(parent.get('class', []))
+                                    debug_info += f" | 첫링크부모: <{parent.name} class='{p_classes}'>"
                         filter_log.append({
                             "title": f"[디버그] 사람인 셀렉터",
                             "company": "", "source": "사람인", "deadline": "",
-                            "reason": f"셀렉터: {selector_used} → {len(items)}개 (HTML크기: {len(res.text)})"
+                            "reason": debug_info
                         })
 
                 if not items:
@@ -480,6 +479,46 @@ class JobScraper:
                 continue
 
         return jobs
+
+    def _find_saramin_items(self, soup):
+        """사람인 검색 결과 아이템을 멀티 셀렉터로 탐색"""
+        # 1) 표준 셀렉터 (.item_recruit — /search/recruit 및 /search 공용 가능)
+        items = soup.select('.item_recruit')
+        if items:
+            return items, '.item_recruit'
+
+        # 2) 통합검색 #recruit_info_list 컨테이너 내부
+        container = soup.select_one('#recruit_info_list')
+        if container:
+            items = container.select('[class*="item"]')
+            if items:
+                return items, '#recruit_info_list [class*=item]'
+            # 링크 있는 div
+            items = [div for div in container.select('div')
+                     if div.select_one('a[href*="recruit"]') or div.select_one('h2 a')]
+            if items:
+                return items, '#recruit_info_list div(link)'
+
+        # 3) .common_recruilt 폴백
+        items = soup.select('.common_recruilt')
+        if items:
+            return items, '.common_recruilt'
+
+        # 4) 최종 폴백: 채용 상세 링크의 부모 블록 자동 탐지
+        recruit_links = soup.select('a[href*="jobs/relay/view"], a[href*="rec_idx="]')
+        if recruit_links:
+            seen_parents = []
+            seen_set = set()
+            for link in recruit_links:
+                # 공고별 블록을 감싸는 부모 요소 찾기
+                parent = link.find_parent('div', class_=True) or link.find_parent('li', class_=True)
+                if parent and id(parent) not in seen_set:
+                    seen_set.add(id(parent))
+                    seen_parents.append(parent)
+            if seen_parents:
+                return seen_parents, f'auto-detect(link→parent, {len(seen_parents)})'
+
+        return [], 'none(0건)'
 
     def _parse_saramin_list_item(self, item) -> Dict[str, Any]:
         job_info = self._get_base_job_info()
